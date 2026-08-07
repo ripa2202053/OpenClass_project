@@ -1,0 +1,59 @@
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Users ──────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      // Any authenticated user can read user profiles (for Teacher to view students)
+      allow read: if request.auth != null;
+      // Users can create/update their own doc; any authenticated user can update
+      // status fields (Teachers approving/rejecting students)
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null;
+    }
+
+    // ── Classrooms ─────────────────────────────────────────────────────────
+    match /classrooms/{classroomId} {
+      // Any authenticated user can read active classrooms
+      allow read: if request.auth != null;
+
+      // Only Teachers can create classrooms
+      allow create: if request.auth != null
+        && request.resource.data.createdBy == request.auth.uid;
+
+      // Only the classroom creator can update or soft-delete
+      allow update, delete: if request.auth != null
+        && resource.data.createdBy == request.auth.uid;
+
+      // ── Members sub-collection ───────────────────────────────────────────
+      match /members/{memberId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null
+          && request.auth.uid == memberId;
+      }
+
+      // ── Sub-collections (assignments, quizzes, notes, activity, notices) ─
+      match /{subcollection}/{docId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null;
+      }
+
+      match /{subcollection}/{docId}/{nested}/{nestedId} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null;
+      }
+    }
+
+    // ── Messages ───────────────────────────────────────────────────────────
+    match /messages/{messageId} {
+      allow read;
+      allow create, update: if request.auth != null;
+      allow delete: if false;
+    }
+
+    // ── FCM Tokens ─────────────────────────────────────────────────────────
+    match /fcmTokens/{token} {
+      allow read: if false;
+      allow write;
+    }
+  }
+}

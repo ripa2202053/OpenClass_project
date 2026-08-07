@@ -1,0 +1,206 @@
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ─────────────────────────────────────────────────
+    function isAuthenticated() { return request.auth != null; }
+    function isOwner(userId) { return request.auth.uid == userId; }
+    function getRole(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data.role;
+    }
+    function isTeacher() { return getRole(request.auth.uid) == 'teacher'; }
+    function isStudent() { return getRole(request.auth.uid) == 'student'; }
+    function isClassroomCreator(classroomId) {
+      return get(/databases/$(database)/documents/classrooms/$(classroomId)).data.createdBy == request.auth.uid;
+    }
+    function isClassroomMember(classroomId) {
+      return exists(/databases/$(database)/documents/classrooms/$(classroomId)/members/$(request.auth.uid));
+    }
+
+    // ── Users ──────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isOwner(userId);
+      // Users can edit only their own profile. Role changes are blocked,
+      // EXCEPT a one-time legacy migration from uppercase to lowercase
+      // (Teacher -> teacher, Student -> student). status cannot change here.
+      allow update: if isAuthenticated() && isOwner(userId)
+        && (
+          (request.resource.data.role == resource.data.role
+            && request.resource.data.status == resource.data.status)
+          ||
+          (request.resource.data.status == resource.data.status
+            && (
+              (resource.data.role == 'Teacher' && request.resource.data.role == 'teacher')
+              || (resource.data.role == 'Student' && request.resource.data.role == 'student')
+            ))
+        );
+      allow delete: if false;
+    }
+
+    // ── Top-level Join Requests ────────────────────────────────────────────
+    match /joinRequests/{requesterId} {
+      allow read: if isAuthenticated() && (isOwner(requesterId) || isTeacher());
+      allow create: if isAuthenticated() && isOwner(requesterId);
+      allow update: if isAuthenticated() && isTeacher();
+      allow delete: if isAuthenticated() && (isOwner(requesterId) || isTeacher());
+    }
+
+    // ── Channels ───────────────────────────────────────────────────────────
+    match /channels/{channelId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isTeacher();
+      allow update: if isAuthenticated() && isTeacher();
+      allow delete: if false;
+
+
+      match /messages/{messageId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
+        allow update: if isAuthenticated() && get(/databases/$(database)/documents/channels/$(channelId)/messages/$(messageId)).data.senderId == request.auth.uid;
+        allow delete: if false;
+      }
+      match /typing/{uid} {
+        allow read, write: if isAuthenticated();
+      }
+      match /readBy/{uid} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+
+    // ── Classrooms ─────────────────────────────────────────────────────────
+    match /classrooms/{classroomId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isTeacher();
+      allow update: if isAuthenticated() && isClassroomCreator(classroomId);
+      allow delete: if false;
+
+      // Members sub-collection
+      match /members/{memberId} {
+        allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
+        allow create: if isAuthenticated() && (isOwner(memberId) || isClassroomCreator(classroomId));
+        allow delete: if isAuthenticated() && isClassroomCreator(classroomId);
+        allow update: if false;
+      }
+
+      // Join Requests sub-collection
+      match /joinRequests/{requesterId} {
+        allow read: if isAuthenticated() && (isOwner(requesterId) || isClassroomCreator(classroomId));
+        allow create: if isAuthenticated() && isOwner(requesterId);
+        allow delete: if isAuthenticated() && (isOwner(requesterId) || isClassroomCreator(classroomId));
+        allow update: if false;
+      }
+
+      // Activity sub-collection
+      match /activity/{activityId} {
+        allow read: if isAuthenticated() && isClassroomMember(classroomId);
+        allow create: if isAuthenticated() && isClassroomMember(classroomId);
+        allow update, delete: if false;
+      }
+
+      // Notices sub-collection
+      match /notices/{noticeId} {
+        allow read: if isAuthenticated() && isClassroomMember(classroomId);
+        allow create: if isAuthenticated() && isClassroomCreator(classroomId);
+        allow update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
+      }
+
+      // Assignments sub-collection
+      match /assignments/{assignmentId} {
+        allow read: if isAuthenticated() && isClassroomMember(classroomId);
+        allow create: if isAuthenticated() && (isClassroomCreator(classroomId) || isTeacher());
+        allow update: if isAuthenticated() && isClassroomCreator(classroomId);
+        allow delete: if isAuthenticated() && isClassroomCreator(classroomId);
+
+        match /submissions/{studentId} {
+          allow read: if isAuthenticated() && (isClassroomCreator(classroomId) || isOwner(studentId));
+          allow write: if isAuthenticated() && isOwner(studentId);
+          allow update: if isAuthenticated() && (isClassroomCreator(classroomId) || isOwner(studentId));
+          allow delete: if false;
+        }
+      }
+
+      // Quizzes sub-collection
+      match /quizzes/{quizId} {
+        allow read: if isAuthenticated() && isClassroomMember(classroomId);
+        allow create: if isAuthenticated() && (isClassroomCreator(classroomId) || isTeacher());
+        allow update: if isAuthenticated() && isClassroomCreator(classroomId);
+        allow delete: if isAuthenticated() && isClassroomCreator(classroomId);
+
+        match /attempts/{studentId} {
+          allow read: if isAuthenticated() && (isClassroomCreator(classroomId) || isOwner(studentId));
+          allow write: if isAuthenticated() && isOwner(studentId);
+          allow delete: if false;
+        }
+      }
+
+      // Notes sub-collection
+      match /notes/{noteId} {
+        allow read: if isAuthenticated() && isClassroomMember(classroomId);
+        allow create: if isAuthenticated() && (isClassroomCreator(classroomId) || isTeacher());
+        allow delete: if isAuthenticated() && isClassroomCreator(classroomId);
+        allow update: if false;
+      }
+
+      // Messages (classroom chat)
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() && isClassroomMember(classroomId);
+        allow create: if isAuthenticated() && isClassroomMember(classroomId);
+        allow update: if isAuthenticated() && isClassroomMember(classroomId);
+        allow delete: if isAuthenticated() && isClassroomCreator(classroomId);
+      }
+
+      // Meetings sub-collection
+      match /meetings/{meetingId} {
+        allow read: if isAuthenticated() && isClassroomMember(classroomId);
+        allow create: if isAuthenticated() && (isClassroomCreator(classroomId) || isTeacher());
+        allow update: if isAuthenticated() && (isClassroomCreator(classroomId) || isTeacher());
+        allow delete: if false;
+      }
+
+      // Attendance sub-collection
+      match /attendance/{date} {
+        allow read: if isAuthenticated() && isClassroomMember(classroomId);
+        allow write: if isAuthenticated() && (isClassroomCreator(classroomId) || isTeacher());
+      }
+    }
+
+    // ── User Attendance ─────────────────────────────────────────────────────
+    match /users/{userId}/attendance/{recordId} {
+      allow read: if isAuthenticated() && (isOwner(userId) || isTeacher());
+      allow write: if isAuthenticated();
+    }
+
+    // ── User Reminders ──────────────────────────────────────────────────────
+    match /users/{userId}/reminders/{reminderId} {
+      allow read, write: if isAuthenticated() && isOwner(userId);
+    }
+
+    // ── Notifications ───────────────────────────────────────────────────────
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && request.auth.uid == resource.data.recipientId;
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.recipientId;
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.recipientId;
+    }
+
+    // ── FCM Tokens ─────────────────────────────────────────────────────────
+    match /fcmTokens/{token} {
+      allow read: if false;
+      allow write: if isAuthenticated();
+    }
+
+    // ── Private 1-on-1 Direct Chats ─────────────────────────────────────────
+    match /privateChats/{chatId} {
+      allow read, write: if isAuthenticated();
+      match /messages/{messageId} {
+        allow read, write: if isAuthenticated();
+      }
+      match /typing/{uid} {
+        allow read, write: if isAuthenticated();
+      }
+      match /readBy/{uid} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+  }
+}

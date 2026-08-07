@@ -1,0 +1,24 @@
+{
+  "name": "friendlychat",
+  "version": "1.0.0",
+  "description": "[Firebase Web Codelab](https://firebase.google.com/codelabs/firebase-web)",
+  "private": true,
+  "scripts": {
+    "build": "set NODE_OPTIONS=--openssl-legacy-provider && webpack --mode production",
+    "start": "set NODE_OPTIONS=--openssl-legacy-provider && webpack --watch --progress",
+    "dev": "set NODE_OPTIONS=--openssl-legacy-provider && cross-env WEBPACK_SERVE=true webpack serve --mode development",
+    "visualize-bundle": "webpack --analyze"
+  },
+  "author": "",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "webpack": "^5.48.0",
+    "webpack-bundle-analyzer": "^4.4.2",
+    "webpack-cli": "^4.7.2",
+    "webpack-dev-server": "^4.15.2"
+  },
+  "dependencies": {
+    "firebase": "^9.0.0"
+  }
+}

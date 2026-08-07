@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="description" content="OpenClass - Ultimate Premium Collaboration Platform">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenClass</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0B1120">
+  
+  <!-- Fonts & Icons -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  
+  <!-- MDL -->
+  <link rel="stylesheet" href="https://code.getmdl.io/1.1.3/material.indigo-pink.min.css">
+  <script defer src="https://code.getmdl.io/1.1.3/material.min.js"></script>
+  
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+
+<!-- ═══════════════════════════ LOADING SCREEN ═══════════════════════════ -->
+<div id="loading-screen" class="loading-screen" style="display:flex;">
+  <div class="loading-content">
+    <div class="loading-brand">
+      <div class="loading-logo"><i class="material-icons" style="font-size:48px;">school</i></div>
+      <div class="loading-name">OpenClass</div>
+    </div>
+    <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ AUTH CONTAINER ═══════════════════════════ -->
+<div id="auth-container" class="auth-container" style="display:none;">
+
+  <!-- ══════ SPLASH SCREEN ══════ -->
+  <div id="screen-splash" class="auth-screen" style="display:none;">
+    <div class="splash-bg">
+      <div class="splash-particle particle-1"></div>
+      <div class="splash-particle particle-2"></div>
+      <div class="splash-particle particle-3"></div>
+      <div class="splash-particle particle-4"></div>
+    </div>
+    <div class="splash-content">
+      <div class="splash-logo-wrap">
+        <div class="splash-icon"><i class="material-icons" style="font-size:64px;">school</i></div>
+        <h1 class="splash-title">OpenClass</h1>
+      </div>
+      <p class="splash-tagline">Learn. Collaborate. Grow Together.</p>
+      <div class="splash-loader"><div class="splash-loader-dot"></div><div class="splash-loader-dot"></div><div class="splash-loader-dot"></div></div>
+    </div>
+  </div>
+
+  <!-- ══════ WELCOME SCREEN ══════ -->
+  <div id="screen-welcome" class="auth-screen" style="display:none;">
+    <div class="welcome-bg">
+      <div class="welcome-glow glow-1"></div>
+      <div class="welcome-glow glow-2"></div>
+      <div class="welcome-glow glow-3"></div>
+    </div>
+    <div class="welcome-content">
+      <div class="welcome-logo">
+        <div class="welcome-icon"><i class="material-icons">school</i></div>
+        <span>OpenClass</span>
+      </div>
+      <h1 class="welcome-heading">Welcome to OpenClass</h1>
+      <p class="welcome-desc">The ultimate learning platform for students and educators. Collaborate, create, and grow together.</p>
+      <div class="welcome-buttons">
+        <button id="btn-welcome-login" class="welcome-btn welcome-btn-primary">Sign In</button>
+        <button id="btn-welcome-register" class="welcome-btn welcome-btn-secondary">Create Account</button>
+      </div>
+      <p class="welcome-footer-text">Join thousands of learners already using OpenClass</p>
+    </div>
+  </div>
+
+  <!-- ══════ LOGIN SCREEN ══════ -->
+  <div id="screen-login" class="auth-screen" style="display:none;">
+    <div class="split-layout">
+      <div class="split-left">
+        <div class="split-left-content">
+          <div class="split-logo"><i class="material-icons">school</i> OpenClass</div>
+          <h2 class="split-heading">Welcome Back</h2>
+          <p class="split-subtext">Sign in to continue your learning journey.</p>
+          <div class="split-illustration">
+            <div class="illust-card"><i class="material-icons">class</i><span>Classes</span></div>
+            <div class="illust-card"><i class="material-icons">forum</i><span>Chat</span></div>
+            <div class="illust-card"><i class="material-icons">assignment</i><span>Tasks</span></div>
+            <div class="illust-card"><i class="material-icons">quiz</i><span>Quizzes</span></div>
+          </div>
+          <p class="split-quote">"Education is the most powerful weapon which you can use to change the world."</p>
+        </div>
+      </div>
+      <div class="split-right">
+        <div class="auth-card">
+          <div class="auth-card-header">
+            <h2>Sign In</h2>
+            <p>Welcome back to OpenClass</p>
+          </div>
+          <div id="auth-error-msg" class="auth-error" style="display:none;"></div>
+          <button id="auth-google-btn" class="auth-social-btn">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+            Sign in with Google
+          </button>
+          <div class="auth-divider"><span>or continue with email</span></div>
+          <form id="auth-login-form" autocomplete="off">
+            <div class="auth-field">
+              <label>Email Address</label>
+              <input type="email" id="auth-email" class="auth-input" placeholder="you@school.edu" required autocomplete="email" />
+            </div>
+            <div class="auth-field">
+              <label>Password</label>
+              <input type="password" id="auth-password" class="auth-input" placeholder="Enter your password" required autocomplete="current-password" />
+            </div>
+            <div class="auth-field-row">
+              <label class="auth-checkbox"><input type="checkbox" checked /> <span>Remember me</span></label>
+              <button type="button" id="auth-forgot-btn" class="auth-link-btn">Forgot Password?</button>
+            </div>
+            <button type="submit" id="auth-login-btn" class="auth-submit-btn">Sign In</button>
+          </form>
+          <div class="auth-alt">
+            <span>Don't have an account?</span>
+            <button type="button" id="btn-login-to-register" class="auth-link-btn">Create Account</button>
+          </div>
+          <div class="auth-guest">
+            <button type="button" id="auth-guest-btn" class="auth-ghost-btn">Continue as Guest</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════ REGISTER SCREEN ══════ -->
+  <div id="screen-register" class="auth-screen" style="display:none;">
+    <div class="split-layout">
+      <div class="split-left">
+        <div class="split-left-content">
+          <div class="split-logo"><i class="material-icons">school</i> OpenClass</div>
+          <h2 class="split-heading">Join OpenClass</h2>
+          <p class="split-subtext">Create your account and start learning today.</p>
+          <div class="split-illustration">
+            <div class="illust-card"><i class="material-icons">school</i><span>Courses</span></div>
+            <div class="illust-card"><i class="material-icons">group</i><span>Community</span></div>
+            <div class="illust-card"><i class="material-icons">trending_up</i><span>Growth</span></div>
+            <div class="illust-card"><i class="material-icons">emoji_events</i><span>Achieve</span></div>
+          </div>
+          <p class="split-quote">"The beautiful thing about learning is that nobody can take it away from you."</p>
+        </div>
+      </div>
+      <div class="split-right">
+        <div class="auth-card">
+          <div class="auth-card-header">
+            <h2>Create Account</h2>
+            <p>Start your OpenClass journey</p>
+          </div>
+          <div id="auth-reg-error-msg" class="auth-error" style="display:none;"></div>
+          <button id="auth-google-reg-btn" class="auth-social-btn">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+            Sign up with Google
+          </button>
+          <div class="auth-divider"><span>or create an account</span></div>
+          <form id="auth-register-form" autocomplete="off">
+            <div class="auth-field-grid">
+              <div class="auth-field">
+                <label>Full Name</label>
+                <input type="text" id="auth-reg-name" class="auth-input" placeholder="Jane Smith" required />
+              </div>
+              <div class="auth-field">
+                <label>Email Address</label>
+                <input type="email" id="auth-reg-email" class="auth-input" placeholder="you@school.edu" required />
+              </div>
+              <div class="auth-field">
+                <label>Password</label>
+                <input type="password" id="auth-reg-password" class="auth-input" placeholder="Min. 6 characters" required minlength="6" />
+              </div>
+              <div class="auth-field">
+                <label>Confirm Password</label>
+                <input type="password" id="auth-reg-confirm" class="auth-input" placeholder="Confirm your password" required />
+              </div>
+              <div class="auth-field">
+                <label>Role</label>
+                <select id="auth-reg-role" class="auth-input">
+                  <option value="Student">Student</option>
+                  <option value="Teacher">Teacher</option>
+                </select>
+              </div>
+              <div class="auth-field">
+                <label>Department / Major</label>
+                <input type="text" id="auth-reg-department" class="auth-input" placeholder="Computer Science" />
+              </div>
+              <div class="auth-field">
+                <label>Student ID</label>
+                <input type="text" id="auth-reg-student-id" class="auth-input" placeholder="STU-XXXX" />
+              </div>
+              <div class="auth-field">
+                <label>Teacher ID</label>
+                <input type="text" id="auth-reg-teacher-id" class="auth-input" placeholder="TCH-XXXX" />
+              </div>
+              <div class="auth-field">
+                <label>Semester / Year</label>
+                <input type="text" id="auth-reg-semester" class="auth-input" placeholder="Semester 1" />
+              </div>
+              <div class="auth-field">
+                <label>Phone Number</label>
+                <input type="tel" id="auth-reg-phone" class="auth-input" placeholder="+1 (555) 000-0000" />
+              </div>
+            </div>
+            <button type="submit" id="auth-register-btn" class="auth-submit-btn">Create Account</button>
+          </form>
+          <div class="auth-alt">
+            <span>Already have an account?</span>
+            <button type="button" id="btn-register-to-login" class="auth-link-btn">Sign In</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="app-layout">
+
+  <!-- ═══════════════════════════ LEFT SIDEBAR ═══════════════════════════ -->
+  <aside class="app-sidebar" id="app-sidebar">
+    <div class="brand">
+      <div class="brand-icon"><i class="material-icons">school</i></div>
+      <div class="brand-text">OpenClass</div>
+    </div>
+
+    <div class="sidebar-scrollable">
+      
+      <!-- ACADEMIC GROUP -->
+      <div class="nav-section animate-slide">
+        <div class="nav-label">ACADEMIC</div>
+        <nav class="nav-menu">
+          <button class="nav-item active" data-tab="dashboard">
+            <i class="material-icons-outlined">space_dashboard</i>
+            <span>Dashboard</span>
+          </button>
+          <button class="nav-item" data-tab="classrooms">
+            <i class="material-icons-outlined">class</i>
+            <span>Classrooms</span>
+          </button>
+          <button class="nav-item" data-tab="assignments">
+            <i class="material-icons-outlined">assignment</i>
+            <span>Assignments</span>
+          </button>
+          <button class="nav-item" data-tab="quiz">
+            <i class="material-icons-outlined">quiz</i>
+            <span>Quizzes</span>
+          </button>
+          <button class="nav-item" data-tab="notes">
+            <i class="material-icons-outlined">description</i>
+            <span>Notes</span>
+          </button>
+          <button class="nav-item" data-tab="students" id="nav-manage-students" style="display:none">
+            <i class="material-icons-outlined">people</i>
+            <span>Manage Students</span>
+          </button>
+        </nav>
+      </div>
+
+      <!-- COMMUNICATION GROUP -->
+      <div class="nav-section animate-slide delay-100">
+        <div class="nav-label">COMMUNICATION</div>
+        <nav class="nav-menu">
+          <button class="nav-item" data-tab="chat">
+            <i class="material-icons-outlined">forum</i>
+            <span>Global Chat</span>
+          </button>
+          <button class="nav-item" data-tab="notice-board">
+            <i class="material-icons-outlined">campaign</i>
+            <span>Notice Board</span>
+          </button>
+        </nav>
+      </div>
+      
+      <!-- ACCOUNT GROUP -->
+      <div class="nav-section animate-slide delay-200">
+        <div class="nav-label">ACCOUNT</div>
+        <nav class="nav-menu">
+          <button class="nav-item" data-tab="profile">
+            <i class="material-icons-outlined">person</i>
+            <span>Profile</span>
+          </button>
+          <button class="nav-item" data-tab="settings">
+            <i class="material-icons-outlined">settings</i>
+            <span>Settings</span>
+          </button>
+          <button hidden id="sign-out" class="nav-item" style="color:var(--danger)">
+            <i class="material-icons-outlined">logout</i>
+            <span>Logout</span>
+          </button>
+        </nav>
+      </div>
+
+    </div>
+    
+    <div class="sidebar-footer">
+      <div class="storage-wrapper">
+        <div class="storage-text"><span>Storage</span><span>3.2 GB / 10 GB</span></div>
+        <div class="storage-bar-bg"><div class="storage-bar-fill"></div></div>
+      </div>
+      <div class="user-card" id="user-container">
+        <div hidden id="user-pic" class="user-card-avatar"></div>
+        <div class="user-card-info">
+          <span hidden id="user-name" class="user-card-name">Guest</span>
+          <span hidden id="topbar-role-badge" class="user-card-role">Student</span>
+        </div>
+        <button hidden id="sign-in" class="btn btn-primary" style="padding: 8px 12px; margin-left: auto;">Sign In</button>
+      </div>
+      <div class="app-version">OpenClass v3.0 SaaS</div>
+    </div>
+  </aside>
+
+  <!-- ═══════════════════════════ MAIN WRAPPER ═══════════════════════════ -->
+  <div class="app-main">
+    
+    <!-- TOP NAVBAR -->
+    <header class="top-navbar">
+      <div class="navbar-left">
+        <div class="search-container">
+          <i class="material-icons">search</i>
+          <input type="text" placeholder="Search across workspace..." />
+        </div>
+      </div>
+      <div class="navbar-right">
+        <button class="btn-create"><i class="material-icons" style="font-size:18px">add</i> Create</button>
+        <button class="icon-btn"><i class="material-icons-outlined">notifications</i></button>
+        <button class="icon-btn"><i class="material-icons-outlined">help_outline</i></button>
+      </div>
+    </header>
+
+    <!-- CONTENT AREA -->
+    <main class="content-area">
+
+      <!-- ══════════════════ TAB: DASHBOARD ══════════════════ -->
+      <section id="tab-dashboard" class="tab-content active-tab">
+        
+        <div class="dashboard-hero animate-fade">
+          <div class="hero-content">
+            <span class="hero-date" id="current-date-display">Monday, 15th October</span>
+            <h1 class="hero-greeting" id="dashboard-hero-greeting">Welcome back!</h1>
+            <p class="hero-quote" id="dashboard-hero-subtitle">Stay on top of your classes and deadlines.</p>
+          </div>
+          <div style="font-size: 100px; opacity: 0.1;"><i class="material-icons text-primary">school</i></div>
+        </div>
+
+        <div class="stats-grid animate-fade delay-100">
+          <div class="stat-card">
+            <div class="stat-header">
+              <div class="stat-icon stat-c-blue"><i class="material-icons">class</i></div>
+              <span class="stat-title">Classrooms</span>
+            </div>
+            <span class="stat-value" id="dashboard-total-classrooms">0</span>
+            <div class="tiny-chart-placeholder"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-header">
+              <div class="stat-icon stat-c-orange"><i class="material-icons">assignment_late</i></div>
+              <span class="stat-title">Pending Tasks</span>
+            </div>
+            <span class="stat-value" id="dashboard-pending-assignments">0</span>
+            <div class="tiny-chart-placeholder" style="opacity: 0.7"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-header">
+              <div class="stat-icon stat-c-green"><i class="material-icons">forum</i></div>
+              <span class="stat-title">Unread Chat</span>
+            </div>
+            <span class="stat-value" id="dashboard-unread-messages">0</span>
+            <div class="tiny-chart-placeholder" style="opacity: 0.5"></div>
+          </div>
+        </div>
+
+        <div class="dashboard-bottom animate-fade delay-200">
+          <div class="activity-card">
+            <h3 class="card-title">Recent Activity <button class="icon-btn" style="width:32px;height:32px"><i class="material-icons">more_vert</i></button></h3>
+            <div class="timeline" id="dashboard-activity-list">
+              <div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No recent activity.</div>
+            </div>
+          </div>
+          
+          <div class="quick-actions">
+            <h3 class="card-title" style="margin-bottom:16px;">Quick Actions</h3>
+            <div class="action-btn" onclick="document.querySelector('.nav-item[data-tab=\'classrooms\']').click()">
+              <div class="action-icon stat-c-blue"><i class="material-icons">add</i></div>
+              Join/Create Class
+            </div>
+            <div class="action-btn switch-to-chat-btn">
+              <div class="action-icon stat-c-green"><i class="material-icons">chat</i></div>
+              Open Global Chat
+            </div>
+            <div class="action-btn" onclick="document.querySelector('.nav-item[data-tab=\'notes\']').click()">
+              <div class="action-icon stat-c-orange"><i class="material-icons">upload_file</i></div>
+              Upload Notes
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════════════════ PENDING APPROVAL OVERLAY ══════════════════ -->
+      <section id="tab-pending-approval" class="tab-content" style="display:none;">
+        <div class="status-gate-wrapper">
+          <div class="status-gate-card animate-scale">
+            <div class="status-gate-icon pending">
+              <i class="material-icons">hourglass_top</i>
+            </div>
+            <h2>Account Pending Approval</h2>
+            <p>Your account is waiting for teacher approval.</p>
+            <p class="status-gate-sub">Please wait until your teacher approves your account.</p>
+            <div class="status-gate-dots">
+              <span class="dot dot-1"></span>
+              <span class="dot dot-2"></span>
+              <span class="dot dot-3"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════════════════ REJECTED OVERLAY ══════════════════ -->
+      <section id="tab-rejected" class="tab-content" style="display:none;">
+        <div class="status-gate-wrapper">
+          <div class="status-gate-card animate-scale">
+            <div class="status-gate-icon rejected">
+              <i class="material-icons">block</i>
+            </div>
+            <h2>Registration Rejected</h2>
+            <p>Your registration has been rejected. Please contact your teacher.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════════════════ TAB: MANAGE STUDENTS (Teacher only) ══════════════════ -->
+      <section id="tab-students" class="tab-content" style="display:none;">
+        <div class="page-header animate-slide">
+          <div>
+            <h1>Manage Students</h1>
+            <p>Approve or reject student registrations.</p>
+          </div>
+          <div style="display:flex; gap:12px;">
+            <button id="btn-refresh-students" class="btn btn-outline"><i class="material-icons">refresh</i> Refresh</button>
+          </div>
+        </div>
+        <div class="students-table-wrapper animate-fade delay-100">
+          <table class="students-table" id="students-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Department</th>
+                <th>Student ID</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="students-table-body">
+              <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted);">Loading students...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ══════════════════ TAB: CLASSROOMS ══════════════════ -->
+      <section id="tab-classrooms" class="tab-content">
+        <div class="page-header animate-slide">
+          <div>
+            <h1>Classrooms</h1>
+            <p>Access your enrolled courses and teaching spaces.</p>
+          </div>
+          <div style="display:flex; gap:16px;">
+            <button id="btn-join-classroom" class="btn btn-outline" style="display:none"><i class="material-icons">login</i> Join</button>
+            <button id="btn-create-classroom" class="btn btn-primary" style="display:none"><i class="material-icons">add</i> Create</button>
+          </div>
+        </div>
+        
+        <div id="classroom-list" class="class-grid animate-fade delay-100">
+           <!-- Empty state handled by index.js -->
+           <div class="alert" style="display:block; background:rgba(255,255,255,0.05); text-align:center; border:none;">
+             <p id="classroom-empty-text">Loading your classrooms...</p>
+           </div>
+        </div>
+      </section>
+
+      <!-- ══════════════════ TAB: NOTICE BOARD ══════════════════ -->
+      <section id="tab-notice-board" class="tab-content">
+        <div class="page-header animate-slide">
+          <div>
+            <h1>Notice Board</h1>
+            <p>Important announcements from your classrooms.</p>
+          </div>
+        </div>
+        <div id="notice-list" class="notice-list animate-fade delay-100">
+          <div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">No notices yet.</div>
+        </div>
+      </section>
+
+      <!-- ══════════════════ TAB: CHAT (FIREBASE) ══════════════════ -->
+      <section id="tab-chat" class="tab-content full-height-tab">
+        <div class="chat-layout animate-fade">
+          
+          <!-- Channels -->
+          <div class="chat-sidebar">
+            <div class="chat-sidebar-header">
+              <span style="font-weight:700; font-size:15px">Channels</span>
+              <i class="material-icons">add</i>
+            </div>
+            <div class="chat-channel-list" id="chat-channel-list">
+            </div>
+          </div>
+
+          <!-- Messages -->
+          <div class="chat-main">
+            <div class="chat-main-header">
+              <div class="chat-title-area">
+                <h3 id="chat-current-channel-name"><i class="material-icons text-muted">tag</i> General</h3>
+                <span class="chat-desc" id="chat-current-channel-desc">General discussion.</span>
+              </div>
+            </div>
+            
+            <div class="chat-messages-container">
+              <div id="messages" style="display:flex; flex-direction:column; gap:24px;"></div>
+              <div id="chat-typing-indicator" class="chat-typing" style="display:none;padding:8px 0;font-size:13px;color:var(--text-muted);">
+                <span id="chat-typing-text">Someone is typing...</span>
+              </div>
+              <div id="must-signin-snackbar" class="mdl-js-snackbar mdl-snackbar">
+                <div class="mdl-snackbar__text"></div>
+                <button class="mdl-snackbar__action" type="button"></button>
+              </div>
+            </div>
+
+            <div class="chat-input-area">
+              <form id="message-form" class="message-form-flex" action="#">
+                <button type="button" id="chat-emoji-btn" class="icon-btn"><i class="material-icons">emoji_emotions</i></button>
+                <div class="input-wrapper">
+                  <input type="text" id="message" autocomplete="off" placeholder="Message #General" />
+                </div>
+                <button id="submitImage" type="button" class="icon-btn" title="Share image"><i class="material-icons">image</i></button>
+                <button id="submit" disabled type="submit" class="btn-send"><i class="material-icons" style="font-size:24px">send</i></button>
+              </form>
+              <div id="chat-emoji-picker" class="emoji-picker" style="display:none;">
+                <div class="emoji-grid">
+                  <span class="emoji-item" data-emoji="😀">😀</span><span class="emoji-item" data-emoji="😂">😂</span>
+                  <span class="emoji-item" data-emoji="❤️">❤️</span><span class="emoji-item" data-emoji="🔥">🔥</span>
+                  <span class="emoji-item" data-emoji="👍">👍</span><span class="emoji-item" data-emoji="🎉">🎉</span>
+                  <span class="emoji-item" data-emoji="😎">😎</span><span class="emoji-item" data-emoji="🤔">🤔</span>
+                  <span class="emoji-item" data-emoji="👏">👏</span><span class="emoji-item" data-emoji="🙏">🙏</span>
+                  <span class="emoji-item" data-emoji="💯">💯</span><span class="emoji-item" data-emoji="⭐">⭐</span>
+                  <span class="emoji-item" data-emoji="📚">📚</span><span class="emoji-item" data-emoji="🎓">🎓</span>
+                  <span class="emoji-item" data-emoji="✅">✅</span><span class="emoji-item" data-emoji="❌">❌</span>
+                  <span class="emoji-item" data-emoji="📝">📝</span><span class="emoji-item" data-emoji="🔔">🔔</span>
+                  <span class="emoji-item" data-emoji="📢">📢</span><span class="emoji-item" data-emoji="🤝">🤝</span>
+                  <span class="emoji-item" data-emoji="💡">💡</span><span class="emoji-item" data-emoji="🗓️">🗓️</span>
+                </div>
+              </div>
+              <form id="image-form" action="#" style="display:none;">
+                <input id="mediaCapture" type="file" accept="image/*" capture="camera" style="display:none;">
+              </form>
+            </div>
+          </div>
+
+          <!-- Members -->
+          <div class="chat-members-panel">
+            <div class="members-header">
+              <h3 style="font-size:15px;">Members</h3>
+            </div>
+            <div class="members-list" id="chat-members-list">
+              <div class="member-category">MEMBERS</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════════════════ TAB: PROFILE ══════════════════ -->
+      <section id="tab-profile" class="tab-content full-height-tab">
+        <div class="profile-cover"></div>
+        <div class="profile-content animate-fade">
+          <div class="profile-main-card">
+            
+            <div class="profile-info-col">
+              <div class="profile-avatar-huge" id="profile-avatar">
+                <label for="profile-file-input" class="profile-avatar-edit">
+                  <i class="material-icons" style="font-size:20px">camera_alt</i>
+                </label>
+                <input type="file" id="profile-file-input" accept="image/*" style="display:none">
+              </div>
+              <h1 id="profile-header-name" style="font-size:28px; margin-bottom:8px">Guest</h1>
+              <span id="profile-header-role" class="badge-status bg-success-dim" style="font-size:13px; padding:6px 16px;">Student</span>
+            </div>
+
+            <div class="profile-form-col">
+              <h2 style="margin-bottom:32px">Profile Details</h2>
+              <form id="profile-form">
+                <div id="profile-alert-msg" class="alert"></div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+                  <div class="form-group"><label>Full Name</label><input type="text" id="profile-input-name" class="form-control" required /></div>
+                  <div class="form-group"><label>Email Address</label><input type="email" id="profile-input-email" class="form-control" disabled /></div>
+                  <div class="form-group">
+                    <label>System Role</label>
+                    <select id="profile-input-role" class="form-control" disabled>
+                      <option value="Student">Student</option>
+                      <option value="Teacher">Teacher</option>
+                    </select>
+                  </div>
+                  <div class="form-group"><label>Department / Major</label><input type="text" id="profile-input-department" class="form-control" /></div>
+                  <div class="form-group"><label>Student ID</label><input type="text" id="profile-input-student-id" class="form-control" /></div>
+                  <div class="form-group"><label>Teacher ID</label><input type="text" id="profile-input-teacher-id" class="form-control" /></div>
+                  <div class="form-group"><label>Semester / Year</label><input type="text" id="profile-input-semester" class="form-control" /></div>
+                  <div class="form-group"><label>Phone Number</label><input type="tel" id="profile-input-phone" class="form-control" /></div>
+                </div>
+                <div style="display:flex; justify-content:flex-end; margin-top:24px;">
+                  <button type="submit" id="save-profile-btn" class="btn btn-primary"><i class="material-icons">save</i> Save Profile</button>
+                </div>
+              </form>
+            </div>
+            
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════════════════ TAB: NOTES ══════════════════ -->
+      <section id="tab-notes" class="tab-content">
+        <div class="page-header animate-slide">
+          <div>
+            <h1>Course Notes</h1>
+            <p>Library of all materials — search and download.</p>
+          </div>
+          <div style="display:flex; gap:12px;">
+            <div class="search-container" style="width:240px;">
+              <i class="material-icons">search</i>
+              <input type="text" id="notes-search-input" placeholder="Search notes..." />
+            </div>
+            <button id="btn-upload-note" class="btn btn-primary"><i class="material-icons">upload</i> Upload</button>
+          </div>
+        </div>
+        <div id="notes-categories" class="notes-categories" style="display:flex; gap:8px; margin-bottom:24px; flex-wrap:wrap;"></div>
+        <div id="notes-grid" class="notes-grid animate-fade delay-100">
+          <div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">No notes uploaded yet.</div>
+        </div>
+      </section>
+
+      <!-- ══════════════════ TAB: ASSIGNMENTS ══════════════════ -->
+      <section id="tab-assignments" class="tab-content">
+        <div class="page-header animate-slide">
+          <div>
+            <h1>Assignments</h1>
+            <p id="assignments-subtitle">Select a classroom to view assignments.</p>
+          </div>
+          <div style="display:flex; gap:12px;">
+            <button id="btn-create-assignment" class="btn btn-primary" style="display:none"><i class="material-icons">add</i> Create Assignment</button>
+          </div>
+        </div>
+        <div id="assignment-class-selector" class="classroom-tabs" style="display:flex; gap:8px; margin-bottom:24px; overflow-x:auto; padding-bottom:8px;"></div>
+        <div id="assignment-list" class="assignment-list animate-fade delay-100">
+          <div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">Select a classroom to view assignments.</div>
+        </div>
+      </section>
+
+      <!-- ══════════════════ TAB: QUIZZES ══════════════════ -->
+      <section id="tab-quiz" class="tab-content">
+        <div class="page-header animate-slide">
+          <div>
+            <h1>Quizzes</h1>
+            <p>Test your knowledge with timed quizzes.</p>
+          </div>
+          <div style="display:flex; gap:12px;">
+            <button id="btn-create-quiz" class="btn btn-primary" style="display:none"><i class="material-icons">add</i> Create Quiz</button>
+          </div>
+        </div>
+        <div id="quiz-class-selector" class="classroom-tabs" style="display:flex; gap:8px; margin-bottom:24px; overflow-x:auto; padding-bottom:8px;"></div>
+        <div id="quiz-list" class="quiz-list animate-fade delay-100">
+          <div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">Select a classroom to view quizzes.</div>
+        </div>
+      </section>
+
+      <section id="tab-placeholder" class="tab-content" style="display:none; align-items:center; justify-content:center; flex-direction:column; height:80%;">
+        <div class="animate-scale" style="text-align:center">
+          <i class="material-icons-outlined text-primary" id="placeholder-icon" style="font-size:64px; color:var(--primary)">build</i>
+          <h1 id="placeholder-title" style="margin:24px 0 16px 0;">Module Name</h1>
+          <p style="max-width:400px; margin:0 auto 32px auto;">This module is being constructed. Check back soon for the final SaaS implementation.</p>
+          <button class="btn btn-outline switch-to-chat-btn">Return to Dashboard</button>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ MODALS ═══════════════════════════ -->
+
+<div id="modal-create-classroom" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Create Classroom</h2>
+      <button class="icon-btn" data-close="modal-create-classroom"><i class="material-icons">close</i></button>
+    </div>
+    <form id="form-create-classroom" class="modal-body">
+      <div id="create-classroom-alert" class="alert"></div>
+      <div class="form-group"><label>Classroom Name *</label><input type="text" id="create-classroom-name" class="form-control" required placeholder="e.g. Physics 101" /></div>
+      <div class="form-group"><label>Subject</label><input type="text" id="create-classroom-subject" class="form-control" placeholder="e.g. Science" /></div>
+      <div class="form-group"><label>Description</label><input type="text" id="create-classroom-desc" class="form-control" /></div>
+      <div class="modal-footer" style="margin: 32px -32px -32px -32px;">
+        <button type="button" class="btn btn-outline" data-close="modal-create-classroom">Cancel</button>
+        <button type="submit" id="btn-submit-create" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="modal-edit-classroom" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Edit Classroom</h2>
+      <button class="icon-btn" data-close="modal-edit-classroom"><i class="material-icons">close</i></button>
+    </div>
+    <form id="form-edit-classroom" class="modal-body">
+      <div id="edit-classroom-alert" class="alert"></div>
+      <input type="hidden" id="edit-classroom-id" />
+      <div class="form-group"><label>Classroom Name *</label><input type="text" id="edit-classroom-name" class="form-control" required placeholder="e.g. Physics 101" /></div>
+      <div class="form-group"><label>Subject</label><input type="text" id="edit-classroom-subject" class="form-control" placeholder="e.g. Science" /></div>
+      <div class="form-group"><label>Description</label><input type="text" id="edit-classroom-desc" class="form-control" /></div>
+      <div class="modal-footer" style="margin: 32px -32px -32px -32px;">
+        <button type="button" class="btn btn-outline" data-close="modal-edit-classroom">Cancel</button>
+        <button type="submit" id="btn-submit-edit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="modal-join-classroom" class="modal-overlay" style="display:none">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-header">
+      <h2>Join Classroom</h2>
+      <button class="icon-btn" data-close="modal-join-classroom"><i class="material-icons">close</i></button>
+    </div>
+    <form id="form-join-classroom" class="modal-body">
+      <div id="join-classroom-alert" class="alert"></div>
+      <div class="form-group">
+        <label>Classroom Code *</label>
+        <input type="text" id="join-classroom-code" class="form-control" required maxlength="8" placeholder="XXXXXX" style="text-align:center; font-family:monospace; font-size:24px; letter-spacing:4px;" />
+      </div>
+      <div class="modal-footer" style="margin: 32px -32px -32px -32px;">
+        <button type="button" class="btn btn-outline" data-close="modal-join-classroom">Cancel</button>
+        <button type="submit" id="btn-submit-join" class="btn btn-primary">Join Class</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ ASSIGNMENT MODALS ═══════════════════════════ -->
+
+<div id="modal-create-assignment" class="modal-overlay" style="display:none">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-header">
+      <h2>Create Assignment</h2>
+      <button class="icon-btn" data-close="modal-create-assignment"><i class="material-icons">close</i></button>
+    </div>
+    <form id="form-create-assignment" class="modal-body">
+      <div id="create-assignment-alert" class="alert"></div>
+      <input type="hidden" id="create-assignment-classroom" />
+      <div class="form-group"><label>Title *</label><input type="text" id="create-assignment-title" class="form-control" required placeholder="e.g. Data Structures Lab 3" /></div>
+      <div class="form-group"><label>Description</label><textarea id="create-assignment-desc" class="form-control" rows="3" placeholder="Describe the assignment..."></textarea></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+        <div class="form-group"><label>Due Date</label><input type="datetime-local" id="create-assignment-due" class="form-control" /></div>
+        <div class="form-group"><label>Max Marks</label><input type="number" id="create-assignment-marks" class="form-control" placeholder="100" min="0" /></div>
+      </div>
+      <div class="form-group"><label>Attachment (PDF)</label><input type="file" id="create-assignment-file" class="form-control" accept=".pdf" /></div>
+      <div class="modal-footer" style="margin: 32px -32px -32px -32px;">
+        <button type="button" class="btn btn-outline" data-close="modal-create-assignment">Cancel</button>
+        <button type="submit" id="btn-submit-create-assignment" class="btn btn-primary">Create Assignment</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="modal-submit-assignment" class="modal-overlay" style="display:none">
+  <div class="modal" style="max-width:500px">
+    <div class="modal-header">
+      <h2 id="submit-assignment-title">Submit Assignment</h2>
+      <button class="icon-btn" data-close="modal-submit-assignment"><i class="material-icons">close</i></button>
+    </div>
+    <form id="form-submit-assignment" class="modal-body">
+      <div id="submit-assignment-alert" class="alert"></div>
+      <input type="hidden" id="submit-assignment-id" />
+      <input type="hidden" id="submit-assignment-classroom" />
+      <div id="submit-assignment-info" style="margin-bottom:24px;"></div>
+      <div class="form-group"><label>Upload File (PDF, DOCX, PPT, etc.)</label><input type="file" id="submit-assignment-file" class="form-control" /></div>
+      <div class="modal-footer" style="margin: 32px -32px -32px -32px;">
+        <button type="button" class="btn btn-outline" data-close="modal-submit-assignment">Cancel</button>
+        <button type="submit" id="btn-submit-assignment" class="btn btn-primary">Submit</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="modal-grade-assignment" class="modal-overlay" style="display:none">
+  <div class="modal" style="max-width:500px">
+    <div class="modal-header">
+      <h2>Grade Submission</h2>
+      <button class="icon-btn" data-close="modal-grade-assignment"><i class="material-icons">close</i></button>
+    </div>
+    <form id="form-grade-assignment" class="modal-body">
+      <div id="grade-assignment-alert" class="alert"></div>
+      <input type="hidden" id="grade-assignment-id" />
+      <input type="hidden" id="grade-assignment-classroom" />
+      <input type="hidden" id="grade-student-id" />
+      <div id="grade-assignment-info" style="margin-bottom:24px;"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+        <div class="form-group"><label>Marks</label><input type="number" id="grade-input-marks" class="form-control" min="0" /></div>
+        <div class="form-group"><label>Max Marks</label><input type="text" id="grade-max-marks" class="form-control" disabled /></div>
+      </div>
+      <div class="form-group"><label>Feedback</label><textarea id="grade-input-feedback" class="form-control" rows="3" placeholder="Provide feedback..."></textarea></div>
+      <div class="modal-footer" style="margin: 32px -32px -32px -32px;">
+        <button type="button" class="btn btn-outline" data-close="modal-grade-assignment">Cancel</button>
+        <button type="submit" id="btn-submit-grade" class="btn btn-primary">Save Grade</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ QUIZ MODALS ═══════════════════════════ -->
+
+<div id="modal-create-quiz" class="modal-overlay" style="display:none">
+  <div class="modal" style="max-width:700px">
+    <div class="modal-header">
+      <h2>Create Quiz</h2>
+      <button class="icon-btn" data-close="modal-create-quiz"><i class="material-icons">close</i></button>
+    </div>
+    <form id="form-create-quiz" class="modal-body">
+      <div id="create-quiz-alert" class="alert"></div>
+      <input type="hidden" id="create-quiz-classroom" />
+      <div class="form-group"><label>Quiz Title *</label><input type="text" id="create-quiz-title" class="form-control" required placeholder="e.g. Midterm Review" /></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+        <div class="form-group"><label>Description</label><input type="text" id="create-quiz-desc" class="form-control" placeholder="Optional description" /></div>
+        <div class="form-group"><label>Time Limit (minutes)</label><input type="number" id="create-quiz-timer" class="form-control" value="10" min="1" /></div>
+      </div>
+      <div class="form-group"><label>Questions</label></div>
+      <div id="quiz-questions-container" style="display:flex;flex-direction:column;gap:16px;margin-bottom:16px;"></div>
+      <button type="button" id="btn-add-question" class="btn btn-outline" style="width:100%;"><i class="material-icons">add</i> Add Question</button>
+      <div class="modal-footer" style="margin: 32px -32px -32px -32px;">
+        <button type="button" class="btn btn-outline" data-close="modal-create-quiz">Cancel</button>
+        <button type="submit" id="btn-submit-create-quiz" class="btn btn-primary">Create Quiz</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="modal-attempt-quiz" class="modal-overlay" style="display:none">
+  <div class="modal" style="max-width:700px;">
+    <div class="modal-header">
+      <h2 id="attempt-quiz-title">Attempt Quiz</h2>
+      <span id="quiz-timer-display" style="font-size:18px;font-weight:700;color:var(--warning);">--:--</span>
+      <button class="icon-btn" data-close="modal-attempt-quiz" id="btn-close-attempt"><i class="material-icons">close</i></button>
+    </div>
+    <div class="modal-body" id="attempt-quiz-body" style="max-height:60vh;overflow-y:auto;">
+      <div id="attempt-quiz-alert" class="alert"></div>
+      <input type="hidden" id="attempt-quiz-id" />
+      <input type="hidden" id="attempt-quiz-classroom" />
+      <input type="hidden" id="attempt-quiz-total" />
+      <div id="attempt-questions-container" style="display:flex;flex-direction:column;gap:20px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" data-close="modal-attempt-quiz">Cancel</button>
+      <button type="button" id="btn-submit-attempt" class="btn btn-primary">Submit Quiz</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-leaderboard" class="modal-overlay" style="display:none">
+  <div class="modal" style="max-width:500px">
+    <div class="modal-header">
+      <h2 id="leaderboard-title">Leaderboard</h2>
+      <button class="icon-btn" data-close="modal-leaderboard"><i class="material-icons">close</i></button>
+    </div>
+    <div class="modal-body" id="leaderboard-body" style="max-height:60vh;overflow-y:auto;"></div>
+  </div>
+</div>
+
+<div id="modal-note-upload" class="modal-overlay" style="display:none">
+  <div class="modal" style="max-width:450px">
+    <div class="modal-header">
+      <h2>Upload Note</h2>
+      <button class="icon-btn" data-close="modal-note-upload"><i class="material-icons">close</i></button>
+    </div>
+    <form id="form-note-upload" class="modal-body">
+      <div id="note-upload-alert" class="alert"></div>
+      <div class="form-group"><label>Category</label>
+        <select id="note-upload-category" class="form-control">
+          <option value="Lecture Notes">Lecture Notes</option>
+          <option value="Lab Manual">Lab Manual</option>
+          <option value="Reference">Reference</option>
+          <option value="Tutorial">Tutorial</option>
+          <option value="Exam Prep">Exam Prep</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+      <div class="form-group"><label>File (PDF, PPT, DOCX, etc.)</label><input type="file" id="note-upload-file" class="form-control" accept=".pdf,.ppt,.pptx,.doc,.docx,.txt,.png,.jpg" /></div>
+      <div class="modal-footer" style="margin: 32px -32px -32px -32px;">
+        <button type="button" class="btn btn-outline" data-close="modal-note-upload">Cancel</button>
+        <button type="submit" id="btn-submit-note-upload" class="btn btn-primary">Upload</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function showAuthScreen(screenId) {
+  document.querySelectorAll('.auth-screen').forEach(s => s.style.display = 'none');
+  const el = document.getElementById(screenId);
+  if (el) {
+    el.style.display = 'flex';
+    el.style.opacity = '0';
+    requestAnimationFrame(() => { el.style.opacity = '1'; });
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  
+  const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+  const dateEl = document.getElementById('current-date-display');
+  if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', dateOptions);
+
+  const navItems = document.querySelectorAll('.nav-menu .nav-item');
+  const FUNCTIONAL_TABS = { 
+    dashboard: 'tab-dashboard', classrooms: 'tab-classrooms', chat: 'tab-chat', 
+    profile: 'tab-profile', notes: 'tab-notes', assignments: 'tab-assignments', quiz: 'tab-quiz',
+    'notice-board': 'tab-notice-board', students: 'tab-students'
+  };
+
+  navItems.forEach(item => {
+    if (item.id === 'sign-out') return;
+    item.addEventListener('click', function (e) {
+      e.preventDefault();
+      const tabName = this.getAttribute('data-tab');
+      if(!tabName) return;
+
+      navItems.forEach(n => n.classList.remove('active'));
+      this.classList.add('active');
+
+      document.querySelectorAll('.tab-content').forEach(tab => {
+        tab.classList.remove('active-tab');
+        setTimeout(() => tab.style.display = 'none', 200);
+      });
+      
+      const targetId = FUNCTIONAL_TABS[tabName];
+      setTimeout(() => {
+        if (targetId) {
+          const t = document.getElementById(targetId);
+          if (!t) return;
+          t.style.display = targetId === 'tab-chat' || targetId === 'tab-profile' ? 'flex' : 'block';
+          requestAnimationFrame(() => t.classList.add('active-tab'));
+        } else {
+          const p = document.getElementById('tab-placeholder');
+          if (!p) return;
+          p.style.display = 'flex';
+          const titleEl = document.getElementById('placeholder-title');
+          const iconEl = document.getElementById('placeholder-icon');
+          if (titleEl) titleEl.textContent = this.querySelector('span').textContent;
+          if (iconEl) iconEl.textContent = this.querySelector('.material-icons-outlined').textContent;
+          requestAnimationFrame(() => p.classList.add('active-tab'));
+        }
+      }, 200);
+    });
+  });
+
+  document.querySelectorAll('.switch-to-chat-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = document.querySelector('.nav-item[data-tab="chat"]');
+      if (target) target.click();
+    });
+  });
+
+  document.querySelectorAll('[data-close]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = document.getElementById(btn.getAttribute('data-close'));
+      if (target) target.style.display = 'none';
+    });
+  });
+
+  // Auth Screen Navigation
+  document.getElementById('btn-welcome-login')?.addEventListener('click', () => showAuthScreen('screen-login'));
+  document.getElementById('btn-welcome-register')?.addEventListener('click', () => showAuthScreen('screen-register'));
+  document.getElementById('btn-login-to-register')?.addEventListener('click', () => showAuthScreen('screen-register'));
+  document.getElementById('btn-register-to-login')?.addEventListener('click', () => showAuthScreen('screen-login'));
+
+  // Splash screen auto-transition (only if splash is visible)
+  setTimeout(() => {
+    const splash = document.getElementById('screen-splash');
+    if (splash && splash.style.display !== 'none' && splash.style.display !== '') {
+      showAuthScreen('screen-welcome');
+    }
+  }, 2000);
+});
+</script>
+<script type="module" src="scripts/main.js"></script>
+</body>
+</html>
