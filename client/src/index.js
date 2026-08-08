@@ -39,7 +39,7 @@ import {
 import { getPerformance } from 'firebase/performance';
 
 import { getFirebaseConfig } from './firebase-config.js';
-import { createUser, getUser, updateUser, updateProfile, isTeacher, isStudent, isApproved, isPending, requireRole, normalizeRole, isValidRole, displayRole, saveProfileToStorage, getProfileFromStorage, clearProfileFromStorage, ROLES, subscribeAllUsers } from './userService.js';
+import { createUser, getUser, updateUser, updateProfile, isTeacher, isStudent, isApproved, isPending, requireRole, normalizeRole, isValidRole, displayRole, saveProfileToStorage, getProfileFromStorage, clearProfileFromStorage, ROLES, subscribeAllUsers, isLocalhost, getInitialsSvgDataUrl, sanitizeProfilePhotoUrl } from './userService.js';
 import {
   createClassroom, joinClassroomByCode, validateJoinCode, subscribeToUserClassrooms,
   updateClassroom, archiveClassroom, deleteClassroomPermanent, leaveClassroom, getClassroom,
@@ -50,7 +50,7 @@ import {
   getThemeGradient, CLASSROOM_THEMES
 } from './classroomService.js';
 
-import { subscribeDashboardData, unsubscribeAll, addActivity, addNotice } from './dashboardService.js';
+import { subscribeDashboardData, unsubscribeAll, addActivity, addNotice, subscribeNotices } from './dashboardService.js';
 import {
   calculateGamification, getBookmarkedResourceIds, toggleBookmarkResource,
   summarizeTextAI, generateQuizAI
@@ -82,6 +82,7 @@ import {
 
 let currentUserProfile = null;
 let selectedProfileImageFile = null;
+let selectedProfileImageDataUrl = null;
 let classroomsUnsubscribe = null;
 let dashboardUnsubscribe = null;
 let chatChannelsUnsubscribe = null;
@@ -192,7 +193,9 @@ function confirmFirstLoginRole() {
 }
 
 function getProfilePicUrl() {
-  return (currentUserProfile && currentUserProfile.photoURL) || getAuth().currentUser?.photoURL || '/images/profile_placeholder.png';
+  const raw = (currentUserProfile && currentUserProfile.photoURL) || getAuth().currentUser?.photoURL || '';
+  const safe = sanitizeProfilePhotoUrl(raw, currentUserProfile);
+  return safe || '/images/profile_placeholder.png';
 }
 
 function getUserName() {
@@ -323,11 +326,10 @@ function populateProfileForm(profile) {
   const stuIdInput = document.getElementById('profile-input-student-id');
   const tchIdInput = document.getElementById('profile-input-teacher-id');
   const semInput = document.getElementById('profile-input-semester');
+  const sessionInput = document.getElementById('profile-input-session');
+  const designationInput = document.getElementById('profile-input-designation');
+  const officeRoomInput = document.getElementById('profile-input-office-room');
   const phoneInput = document.getElementById('profile-input-phone');
-  const headerName = document.getElementById('profile-header-name');
-  const headerRole = document.getElementById('profile-header-role');
-  const topbarRoleBadge = document.getElementById('topbar-role-badge');
-  const avatarImg = document.getElementById('profile-avatar');
   if (nameInput) nameInput.value = profile.displayName || '';
   if (emailInput) emailInput.value = profile.email || '';
   if (roleInput) roleInput.value = profile.role || '';
@@ -335,46 +337,193 @@ function populateProfileForm(profile) {
   if (stuIdInput) stuIdInput.value = profile.studentId || '';
   if (tchIdInput) tchIdInput.value = profile.teacherId || '';
   if (semInput) semInput.value = profile.semester || '';
+  if (sessionInput) sessionInput.value = profile.session || '';
+  if (designationInput) designationInput.value = profile.designation || '';
+  if (officeRoomInput) officeRoomInput.value = profile.officeRoom || '';
   if (phoneInput) phoneInput.value = profile.phone || '';
-  if (headerName) headerName.textContent = profile.displayName || 'OpenClass User';
-  if (headerRole) headerRole.textContent = displayRole(profile.role);
-  if (topbarRoleBadge) {
-    topbarRoleBadge.textContent = displayRole(profile.role);
-    topbarRoleBadge.className = 'user-card-role role-badge ' + (isTeacher(profile) ? 'teacher' : 'student');
-    topbarRoleBadge.removeAttribute('hidden');
+  applyRoleBasedProfileForm(profile);
+  refreshProfileSummaryUI(profile);
+}
+
+function refreshProfileSummaryUI(profile) {
+  const p = profile || currentUserProfile;
+  if (!p) return;
+  const isUserTeacher = isTeacher(p);
+  const photoUrl = p.photoURL || '';
+  const displayName = p.displayName || 'OpenClass User';
+  const roleLabel = displayRole(p.role);
+
+  // Center profile summary card (avatar, name, badge)
+  const avatarImg = document.getElementById('profile-avatar');
+  if (avatarImg) applyAvatarBackground(avatarImg, photoUrl, p);
+  const headerName = document.getElementById('profile-header-name');
+  if (headerName) headerName.textContent = displayName;
+  const headerRole = document.getElementById('profile-header-role');
+  if (headerRole) headerRole.textContent = roleLabel;
+
+  // Sidebar user profile component (avatar, name, badge)
+  const picEl = document.getElementById('user-pic');
+  if (picEl) {
+    applyAvatarBackground(picEl, photoUrl, p);
+    picEl.removeAttribute('hidden');
   }
-  if (avatarImg) {
-    const photoUrl = profile.photoURL || '/images/profile_placeholder.png';
-    avatarImg.style.backgroundImage = `url('${addSizeToGoogleProfilePic(photoUrl)}')`;
+  const nameEl = document.getElementById('user-name');
+  if (nameEl) {
+    nameEl.textContent = displayName;
+    nameEl.removeAttribute('hidden');
+  }
+  const badgeEl = document.getElementById('topbar-role-badge');
+  if (badgeEl) {
+    badgeEl.textContent = roleLabel;
+    badgeEl.className = 'user-card-role role-badge ' + (isUserTeacher ? 'teacher' : 'student');
+    badgeEl.removeAttribute('hidden');
   }
 }
 
+function applyAvatarBackground(element, photoUrl, profile) {
+  if (!element) return;
+  const fallback = getInitialsSvgDataUrl(profile);
+  // Localhost CORS bypass: never request Firebase Storage locally — render the
+  // initials SVG directly so no HTTP request / CORS error is ever triggered.
+  const isStorageOnLocalhost =
+    isLocalhost() &&
+    typeof photoUrl === 'string' &&
+    photoUrl.startsWith('https://firebasestorage.googleapis.com');
+  if (isStorageOnLocalhost || !photoUrl) {
+    element.style.backgroundImage = `url('${fallback}')`;
+    return;
+  }
+  // Never request Firebase Storage on localhost — swap to a local fallback first.
+  const safeUrl = sanitizeProfilePhotoUrl(photoUrl, profile);
+  if (!safeUrl || safeUrl.startsWith('data:')) {
+    // Local data URL (initials SVG or Base64) — apply directly, no network request.
+    element.style.backgroundImage = `url('${safeUrl || fallback}')`;
+    return;
+  }
+  const img = new Image();
+  img.onload = () => {
+    if (element) element.style.backgroundImage = `url('${addSizeToGoogleProfilePic(safeUrl)}')`;
+  };
+  // CORS/network failure on any CDN — replace with a placeholder so no broken image is shown.
+  img.onerror = () => {
+    if (element) element.style.backgroundImage = `url('${fallback}')`;
+  };
+  img.src = safeUrl;
+}
+
+function downscaleImageDataUrl(dataUrl, maxDim) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      } catch (err) {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+function applyRoleBasedProfileForm(profile) {
+  const isUserTeacher = isTeacher(profile);
+  const isUserStudent = isStudent(profile);
+  const groups = document.querySelectorAll('#profile-form [data-profile-role]');
+  groups.forEach((group) => {
+    const roles = (group.getAttribute('data-profile-role') || 'common').split(/\s+/);
+    const show = roles.includes('common') ||
+      (isUserTeacher && roles.includes('teacher')) ||
+      (isUserStudent && roles.includes('student'));
+    group.style.display = show ? '' : 'none';
+  });
+}
+
+let profileSaveInFlight = false;
+
 async function onProfileFormSubmit(e) {
   e.preventDefault();
-  if (!isUserSignedIn()) return;
+  e.stopPropagation();
+  if (profileSaveInFlight) return;
+  profileSaveInFlight = true;
   const alertElement = document.getElementById('profile-alert-msg');
   const saveBtn = document.getElementById('save-profile-btn');
   if (saveBtn) saveBtn.disabled = true;
   try {
-    const updatedData = {
-      displayName: document.getElementById('profile-input-name').value,
-      role: document.getElementById('profile-input-role').value,
-      department: document.getElementById('profile-input-department').value,
-      studentId: document.getElementById('profile-input-student-id').value,
-      teacherId: document.getElementById('profile-input-teacher-id').value,
-      semester: document.getElementById('profile-input-semester').value,
-      phone: document.getElementById('profile-input-phone').value,
+    const user = getAuth().currentUser;
+    if (!user) throw new Error('No active authenticated user found.');
+
+    // Safely query by ID with fallback chains in case an input id is renamed.
+    const formVal = (...ids) => {
+      for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el) return el.value || '';
+      }
+      return '';
     };
-    const updatedUser = await updateProfile(
-      getAuth().currentUser.uid,
+    const role = formVal('profile-input-role', 'profile-role');
+    const common = {
+      displayName: formVal('profile-input-name', 'profile-full-name'),
+      role: role,
+      department: formVal('profile-input-department', 'profile-dept'),
+      phone: formVal('profile-input-phone', 'profile-phone'),
+      photoURL: (currentUserProfile && currentUserProfile.photoURL) || '',
+    };
+    // Extract only the fields relevant to the current role.
+    const updatedData = role === 'teacher'
+      ? {
+          ...common,
+          teacherId: formVal('profile-input-teacher-id', 'profile-teacher-id'),
+          designation: formVal('profile-input-designation', 'profile-designation'),
+          officeRoom: formVal('profile-input-office-room', 'profile-office', 'profile-office-room')
+        }
+      : {
+          ...common,
+          studentId: formVal('profile-input-student-id', 'profile-student-id'),
+          semester: formVal('profile-input-semester', 'profile-semester'),
+          session: formVal('profile-input-session', 'profile-session')
+        };
+    const updateResult = await updateProfile(
+      user.uid,
       updatedData,
-      selectedProfileImageFile
+      selectedProfileImageFile,
+      selectedProfileImageDataUrl
     );
+    const photoUploadSkipped = !!(updateResult && updateResult._photoUploadSkipped);
+    let updatedUser = updateResult;
+
+    if (!updatedUser) {
+      // Firestore write succeeded but the read-back failed; merge locally so the UI never loses the profile.
+      // When Storage was blocked, fall back to the locally-prepared Base64 photo.
+      const localPhoto = selectedProfileImageDataUrl || (currentUserProfile && currentUserProfile.photoURL) || '';
+      updatedUser = {
+        ...(currentUserProfile || {}),
+        ...updatedData,
+        uid: user.uid,
+        photoURL: localPhoto
+      };
+    }
+
     currentUserProfile = updatedUser;
+    window.currentUserProfile = updatedUser;
     selectedProfileImageFile = null;
+    selectedProfileImageDataUrl = null;
+    saveProfileToStorage(updatedUser);
     populateProfileForm(updatedUser);
-    userPicElement.style.backgroundImage = 'url(' + addSizeToGoogleProfilePic(getProfilePicUrl()) + ')';
-    userNameElement.textContent = getUserName();
+    refreshProfileSummaryUI(updatedUser);
+    applyRoleBasedUI(updatedUser);
+    showAppToast('Profile updated successfully!');
+    if (photoUploadSkipped) {
+      showAppToast('Profile saved! (Photo upload bypassed due to storage network policy)', 'info');
+    }
     if (alertElement) {
       alertElement.className = 'profile-alert success';
       alertElement.textContent = 'Profile updated successfully!';
@@ -382,30 +531,38 @@ async function onProfileFormSubmit(e) {
       setTimeout(() => { alertElement.style.display = 'none'; }, 4000);
     }
   } catch (error) {
-    console.error('Error saving profile:', error);
+    console.error('Profile Save Failed:', error);
+    // Revert any local photo preview so the UI shows the last successfully saved avatar.
+    if (selectedProfileImageFile) {
+      selectedProfileImageFile = null;
+      selectedProfileImageDataUrl = null;
+      populateProfileForm(currentUserProfile);
+    }
     if (alertElement) {
       alertElement.className = 'profile-alert error';
       alertElement.textContent = 'Failed to save profile changes. Please try again.';
       alertElement.style.display = 'block';
     }
+    showAppToast('Failed to save profile: ' + ((error && error.message) || error), 'error');
   } finally {
     if (saveBtn) saveBtn.disabled = false;
+    profileSaveInFlight = false;
   }
 }
 
 function applyRoleBasedUI(profile) {
   const isUserTeacher = isTeacher(profile);
   const isUserStudent = isStudent(profile);
-  const isPending = isUserStudent && profile.status === 'pending';
+  const isPending = isUserStudent && profile.status === 'pending' && profile.requiresApproval === true;
   const isRejected = isUserStudent && profile.status === 'rejected';
-  const isApproved = isUserStudent && profile.status === 'approved';
+  const isApproved = !isPending && !isRejected;
 
   // Pending/rejected card
   const pendingCard = document.getElementById('pending-status-card');
   const studentContent = document.getElementById('student-dashboard-content');
   if (pendingCard && studentContent) {
     if (isPending || isRejected) {
-      pendingCard.style.display = '';
+      pendingCard.style.display = 'block';
       studentContent.style.display = 'none';
       const icon = document.getElementById('pending-status-icon');
       const title = document.getElementById('pending-status-title');
@@ -421,187 +578,32 @@ function applyRoleBasedUI(profile) {
       }
     } else {
       pendingCard.style.display = 'none';
-      studentContent.style.display = '';
+      studentContent.style.display = 'block';
     }
   }
 
-  // Dynamic Sidebar rendering for Role Isolation
-  const sidebarScrollable = document.querySelector('.sidebar-scrollable');
-  if (sidebarScrollable) {
-    if (isUserTeacher) {
-      // Teacher Sidebar: Exactly as it was originally
-      sidebarScrollable.innerHTML = `
-        <div class="nav-section animate-slide">
-          <div class="nav-label">ACADEMIC</div>
-          <nav class="nav-menu">
-            <button class="nav-item active" data-tab="dashboard">
-              <i class="material-icons-outlined">space_dashboard</i>
-              <span>Dashboard</span>
-            </button>
-            <button class="nav-item" data-tab="classrooms">
-              <i class="material-icons-outlined">class</i>
-              <span>Classrooms</span>
-            </button>
-            <button class="nav-item" data-tab="assignments">
-              <i class="material-icons-outlined">assignment</i>
-              <span>Assignments</span>
-            </button>
-            <button class="nav-item" data-tab="quiz">
-              <i class="material-icons-outlined">quiz</i>
-              <span>Quizzes</span>
-            </button>
-            <button class="nav-item" data-tab="notes">
-              <i class="material-icons-outlined">description</i>
-              <span>Notes</span>
-            </button>
-            <button class="nav-item" data-tab="meetings">
-              <i class="material-icons-outlined">videocam</i>
-              <span>Meetings</span>
-            </button>
-            <button class="nav-item" data-tab="attendance">
-              <i class="material-icons-outlined">fact_check</i>
-              <span>Attendance</span>
-            </button>
-            <button class="nav-item" data-tab="calendar">
-              <i class="material-icons-outlined">calendar_month</i>
-              <span>Calendar</span>
-            </button>
-            <button class="nav-item" data-tab="analytics">
-              <i class="material-icons-outlined">insights</i>
-              <span>Analytics</span>
-            </button>
-            <button class="nav-item" data-tab="approvals">
-              <i class="material-icons-outlined">verified_user</i>
-              <span>Approvals</span>
-            </button>
-          </nav>
-        </div>
-        <div class="nav-section animate-slide delay-100">
-          <div class="nav-label">COMMUNICATION</div>
-          <nav class="nav-menu">
-            <button class="nav-item" data-tab="chat">
-              <i class="material-icons-outlined">forum</i>
-              <span>Global Chat</span>
-            </button>
-            <button class="nav-item" data-tab="notice-board">
-              <i class="material-icons-outlined">campaign</i>
-              <span>Notice Board</span>
-            </button>
-          </nav>
-        </div>
-        <div class="nav-section animate-slide delay-150">
-          <div class="nav-label">UPDATES</div>
-          <nav class="nav-menu">
-            <button class="nav-item" data-tab="notifications">
-              <i class="material-icons-outlined">notifications</i>
-              <span>Notifications</span>
-            </button>
-          </nav>
-        </div>
-        <div class="nav-section animate-slide delay-200">
-          <div class="nav-label">ACCOUNT</div>
-          <nav class="nav-menu">
-            <button class="nav-item" data-tab="profile">
-              <i class="material-icons-outlined">person</i>
-              <span>Profile</span>
-            </button>
-            <button class="nav-item" data-tab="settings">
-              <i class="material-icons-outlined">settings</i>
-              <span>Settings</span>
-            </button>
-            <button hidden id="sign-out" class="nav-item" style="color:var(--danger)">
-              <i class="material-icons-outlined">logout</i>
-              <span>Logout</span>
-            </button>
-          </nav>
-        </div>`;
-    } else {
-      // Student Sidebar: Enhanced Student Dashboard & Study Tools
-      sidebarScrollable.innerHTML = `
-        <div class="nav-section animate-slide">
-          <div class="nav-label">ACADEMIC</div>
-          <nav class="nav-menu">
-            <button class="nav-item active" data-tab="dashboard">
-              <i class="material-icons-outlined">space_dashboard</i>
-              <span>Dashboard</span>
-            </button>
-            <button class="nav-item" data-tab="classrooms">
-              <i class="material-icons-outlined">class</i>
-              <span>My Courses</span>
-            </button>
-            <button class="nav-item" data-tab="kanban-tracker">
-              <i class="material-icons-outlined">view_kanban</i>
-              <span>Homework Tracker</span>
-            </button>
-            <button class="nav-item" data-tab="assignments">
-              <i class="material-icons-outlined">assignment</i>
-              <span>Assignments</span>
-            </button>
-            <button class="nav-item" data-tab="quiz">
-              <i class="material-icons-outlined">quiz</i>
-              <span>Quizzes</span>
-            </button>
-            <button class="nav-item" data-tab="calendar">
-              <i class="material-icons-outlined">calendar_month</i>
-              <span>Class Schedule</span>
-            </button>
-            <button class="nav-item" data-tab="analytics">
-              <i class="material-icons-outlined">insights</i>
-              <span>Grades & Analytics</span>
-            </button>
-          </nav>
-        </div>
-        <div class="nav-section animate-slide delay-100">
-          <div class="nav-label">COMMUNICATION</div>
-          <nav class="nav-menu">
-            <button class="nav-item" data-tab="chat">
-              <i class="material-icons-outlined">forum</i>
-              <span>Discussion Forum</span>
-            </button>
-            <button class="nav-item" data-tab="notice-board">
-              <i class="material-icons-outlined">campaign</i>
-              <span>Announcements</span>
-            </button>
-          </nav>
-        </div>
-        <div class="nav-section animate-slide delay-150">
-          <div class="nav-label">STUDY TOOLS</div>
-          <nav class="nav-menu">
-            <button class="nav-item" data-tab="resources">
-              <i class="material-icons-outlined">folder_special</i>
-              <span>Resource Vault</span>
-            </button>
-            <button class="nav-item" data-tab="ai-assistant">
-              <i class="material-icons-outlined">auto_awesome</i>
-              <span>AI Study Assistant</span>
-            </button>
-          </nav>
-        </div>
-        <div class="nav-section animate-slide delay-200">
-          <div class="nav-label">ACCOUNT</div>
-          <nav class="nav-menu">
-            <button class="nav-item" data-tab="notifications">
-              <i class="material-icons-outlined">notifications</i>
-              <span>Notifications</span>
-            </button>
-            <button class="nav-item" data-tab="profile">
-              <i class="material-icons-outlined">person</i>
-              <span>Profile</span>
-            </button>
-            <button class="nav-item" data-tab="settings">
-              <i class="material-icons-outlined">settings</i>
-              <span>Settings</span>
-            </button>
-            <button hidden id="sign-out" class="nav-item" style="color:var(--danger)">
-              <i class="material-icons-outlined">logout</i>
-              <span>Logout</span>
-            </button>
-          </nav>
-        </div>`;
-    }
-    if (window.setupNavigationTabListeners) {
-      window.setupNavigationTabListeners();
-    }
+  // Show/Hide Teacher-only navigation items in sidebar
+  const approvalsTab = document.querySelector('.nav-item[data-tab="approvals"]');
+  if (approvalsTab) {
+    approvalsTab.style.display = isUserTeacher ? '' : 'none';
+  }
+
+  // Label customization for Student vs Teacher sidebar
+  const classroomsTabLabel = document.querySelector('.nav-item[data-tab="classrooms"] span');
+  if (classroomsTabLabel) {
+    classroomsTabLabel.textContent = isUserTeacher ? 'Classrooms' : 'My Courses';
+  }
+  const chatTabLabel = document.querySelector('.nav-item[data-tab="chat"] span');
+  if (chatTabLabel) {
+    chatTabLabel.textContent = isUserTeacher ? 'Global Chat' : 'Discussion Forum';
+  }
+  const noticeTabLabel = document.querySelector('.nav-item[data-tab="notice-board"] span');
+  if (noticeTabLabel) {
+    noticeTabLabel.textContent = isUserTeacher ? 'Notice Board' : 'Announcements';
+  }
+
+  if (profile?.role) {
+    localStorage.setItem('openclass_user_role', String(profile.role).toLowerCase());
   }
 
   // Role badge styling
@@ -617,18 +619,22 @@ function applyRoleBasedUI(profile) {
   const activeTab = document.querySelector('.tab-content.active-tab');
 
   if (isUserTeacher) {
-    if (teacherDash) teacherDash.style.display = '';
-    if (studentDash) studentDash.style.display = 'none';
-    if (activeTab === studentDash && teacherDash) {
-      teacherDash.classList.add('active-tab');
+    if (teacherDash) {
       teacherDash.style.display = 'block';
+      teacherDash.classList.add('active-tab');
+    }
+    if (studentDash) {
+      studentDash.style.display = 'none';
+      studentDash.classList.remove('active-tab');
     }
   } else if (isUserStudent) {
-    if (teacherDash) teacherDash.style.display = 'none';
-    if (studentDash) studentDash.style.display = '';
-    if (activeTab === teacherDash && studentDash) {
-      studentDash.classList.add('active-tab');
+    if (teacherDash) {
+      teacherDash.style.display = 'none';
+      teacherDash.classList.remove('active-tab');
+    }
+    if (studentDash) {
       studentDash.style.display = 'block';
+      studentDash.classList.add('active-tab');
     }
   }
 
@@ -1215,20 +1221,37 @@ mediaCaptureElement?.addEventListener('change', onMediaFileSelected);
 if (profileFormElement) {
   profileFormElement.addEventListener('submit', onProfileFormSubmit);
 }
+const saveProfileButton = document.getElementById('save-profile-btn');
+if (saveProfileButton) {
+  saveProfileButton.addEventListener('click', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    onProfileFormSubmit(e);
+  });
+}
 if (profileFileInputElement) {
   profileFileInputElement.addEventListener('change', function(e) {
     const file = e.target.files[0];
-    if (file && file.type.match('image.*')) {
-      selectedProfileImageFile = file;
-      const reader = new FileReader();
-      reader.onload = function(evt) {
-        const avatarImg = document.getElementById('profile-avatar');
-        if (avatarImg) {
-          avatarImg.style.backgroundImage = `url('${evt.target.result}')`;
-        }
-      };
-      reader.readAsDataURL(file);
-    }
+    if (!file || !file.type.match('image.*')) return;
+    selectedProfileImageFile = file;
+    selectedProfileImageDataUrl = null;
+    const reader = new FileReader();
+    reader.onload = async function(evt) {
+      const rawDataUrl = evt.target.result;
+      const avatarImg = document.getElementById('profile-avatar');
+      if (avatarImg) {
+        avatarImg.style.backgroundImage = `url('${rawDataUrl}')`;
+      }
+      // Keep a compact Base64 copy for the CORS fallback path so the
+      // avatar can still be persisted to Firestore when Storage is blocked.
+      try {
+        selectedProfileImageDataUrl = await downscaleImageDataUrl(rawDataUrl, 256);
+      } catch (err) {
+        console.warn('Could not downscale profile photo for fallback:', err);
+        selectedProfileImageDataUrl = rawDataUrl;
+      }
+    };
+    reader.readAsDataURL(file);
   });
 }
 
@@ -1281,16 +1304,36 @@ try {
   onAuthStateChanged(getAuth(), async (user) => {
     try {
       if (user) {
+        console.log('[Auth] User signed in:', user.uid, user.email);
         showApp();
         await authStateObserver(user);
         updateHeroGreeting();
         loadInitialChannels();
+        
+        // Guaranteed classroom loading check: if classroomsUnsubscribe is still null,
+        // it means authStateObserver failed to set it up. Force it.
+        if (!classroomsUnsubscribe) {
+          console.warn('[Auth] classroomsUnsubscribe not set after authStateObserver. Force-loading classrooms.');
+          const role = currentUserProfile?.role || localStorage.getItem('openclass_user_role') || 'teacher';
+          classroomsUnsubscribe = subscribeToUserClassrooms(user.uid, role, renderClassrooms);
+        }
       } else {
+        console.log('[Auth] No user signed in');
         showAuth();
       }
     } catch (err) {
-      console.error('Error in auth state observer:', err);
+      console.error('[Auth] Error in auth state observer:', err);
       showApp();
+      // Even on error, try to load classrooms if user exists
+      if (user && !classroomsUnsubscribe) {
+        try {
+          console.warn('[Auth] Attempting emergency classroom load after error');
+          const role = localStorage.getItem('openclass_user_role') || 'teacher';
+          classroomsUnsubscribe = subscribeToUserClassrooms(user.uid, role, renderClassrooms);
+        } catch (e2) {
+          console.error('[Auth] Emergency classroom load also failed:', e2);
+        }
+      }
     }
   });
 } catch (error) {
@@ -1306,6 +1349,18 @@ setTimeout(() => {
     loadingEl.style.display = 'none';
   }
 }, 2000);
+
+// Safety timeout: force-load classrooms after 4s if not already loaded
+setTimeout(() => {
+  const authUser = getAuth().currentUser;
+  const listEl = document.getElementById('classroom-list');
+  if (authUser && listEl && listEl.children.length === 0) {
+    console.warn('[Safety] Classrooms not loaded after 4s. Force-loading for uid:', authUser.uid);
+    const role = currentUserProfile?.role || localStorage.getItem('openclass_user_role') || 'teacher';
+    if (classroomsUnsubscribe) classroomsUnsubscribe();
+    classroomsUnsubscribe = subscribeToUserClassrooms(authUser.uid, role, renderClassrooms);
+  }
+}, 4000);
 
 // ─── DASHBOARD ────────────────────────────────────────────────────
 
@@ -1373,29 +1428,81 @@ function handleDashboardUpdate(update) {
     }
     case 'recentActivity': {
       const listEl = document.getElementById('dashboard-activity-list');
-      if (!listEl) return;
-      if (!data || data.length === 0) {
-        listEl.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No recent activity.</div>';
-        return;
+      const studentRecentEl = document.getElementById('student-recent-activity-list');
+      
+      if (listEl) {
+        if (!data || data.length === 0) {
+          listEl.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No recent activity.</div>';
+        } else {
+          listEl.innerHTML = '';
+          data.slice(0, 10).forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'timeline-item';
+            const icon = item.type === 'classroom_created' ? 'add' :
+                         item.type === 'classroom_joined' ? 'person_add' :
+                         item.type === 'assignment_submitted' ? 'check' : 'notifications';
+            const dotClass = item.type === 'assignment_submitted' ? 'primary' : '';
+            const ts = item.timestamp ? item.timestamp.toMillis() : Date.now();
+            const timeStr = timeAgo(ts);
+            div.innerHTML = `
+              <div class="timeline-dot ${dotClass}"><i class="material-icons">${icon}</i></div>
+              <div class="timeline-content">
+                <h4>${item.description || 'Activity'}</h4>
+                <p>${item.userName || ''}</p>
+                <span class="timeline-time">${timeStr}</span>
+              </div>`;
+            listEl.appendChild(div);
+          });
+        }
       }
-      listEl.innerHTML = '';
-      data.slice(0, 10).forEach(item => {
-        const div = document.createElement('div');
-        div.className = 'timeline-item';
-        const icon = item.type === 'classroom_created' ? 'add' :
-                     item.type === 'classroom_joined' ? 'person_add' :
-                     item.type === 'assignment_submitted' ? 'check' : 'notifications';
-        const dotClass = item.type === 'assignment_submitted' ? 'primary' : '';
-        const ts = item.timestamp ? item.timestamp.toMillis() : Date.now();
-        const timeStr = timeAgo(ts);
-        div.innerHTML = `
-          <div class="timeline-dot ${dotClass}"><i class="material-icons">${icon}</i></div>
-          <div class="timeline-content">
-            <h4>${item.description || 'Activity'}</h4>
-            <p>${item.userName || ''}</p>
-            <span class="timeline-time">${timeStr}</span>
-          </div>`;
-        listEl.appendChild(div);
+
+      if (studentRecentEl) {
+        if (!data || data.length === 0) {
+          studentRecentEl.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:32px 0;color:var(--text-muted);">No recent activity updates yet.</div>';
+        } else {
+          studentRecentEl.innerHTML = '';
+          data.slice(0, 6).forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'timeline-item';
+            const icon = item.type === 'assignment_submitted' ? 'assignment_turned_in' :
+                         item.type === 'note_uploaded' ? 'description' :
+                         item.type === 'grade_published' ? 'grade' : 'notifications';
+            const ts = item.timestamp ? item.timestamp.toMillis() : Date.now();
+            div.innerHTML = `
+              <div class="timeline-dot primary"><i class="material-icons">${icon}</i></div>
+              <div class="timeline-content">
+                <h4 style="font-size:13.5px;margin-bottom:2px;">${item.description || 'Student Activity'}</h4>
+                <p style="font-size:12px;color:var(--text-muted);">${item.userName || 'Instructor'} • ${timeAgo(ts)}</p>
+              </div>`;
+            studentRecentEl.appendChild(div);
+          });
+        }
+      }
+      break;
+    }
+    case 'upcomingDeadlines': {
+      const listEl = document.getElementById('student-upcoming-deadlines-list');
+      const mainListEl = document.getElementById('main-dashboard-upcoming-deadlines-list');
+      const targets = [listEl, mainListEl].filter(Boolean);
+      if (targets.length === 0) break;
+      targets.forEach(t => {
+        if (!data || data.length === 0) {
+          t.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:32px 0;color:var(--text-muted);">No upcoming deadlines due.</div>';
+        } else {
+          t.innerHTML = '';
+          data.slice(0, 5).forEach(item => {
+            const div = document.createElement('div');
+            div.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:12px 14px; background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:10px; margin-bottom:10px;';
+            div.innerHTML = `
+              <div>
+                <div style="font-weight:600; font-size:13.5px; color:#f8fafc; margin-bottom:2px;">${item.title || 'Assignment Deadline'}</div>
+                <div style="font-size:12px; color:#94a3b8;">Course: ${item.courseName || 'Classroom'}</div>
+              </div>
+              <span class="badge ${item.urgent ? 'badge-danger' : 'badge-orange'}" style="font-size:11px;">${item.dueDateStr || 'Due Soon'}</span>
+            `;
+            t.appendChild(div);
+          });
+        }
       });
       break;
     }
@@ -1670,17 +1777,25 @@ function showAppToast(message, type = 'success') {
   }, 3500);
 }
 
-function renderClassrooms(classrooms, errorMsg) {
+var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
   const listEl = document.getElementById('classroom-list');
   if (!listEl) return;
 
+  // Clear loading state and any existing content immediately
+  listEl.innerHTML = '';
+
+  try {
   if (currentUserProfile) {
     try {
       initLiveMeetingsModule(currentUserProfile, classrooms);
     } catch (e) {
       console.error('Error initializing live meetings:', e);
     }
-    handleMeetingDeepLink();
+    try {
+      handleMeetingDeepLink();
+    } catch (e) {
+      console.error('Error handling meeting deep link:', e);
+    }
     if (isStudent(currentUserProfile)) {
       try {
         initStudentDashboardFeatures(currentUserProfile, classrooms);
@@ -1689,9 +1804,6 @@ function renderClassrooms(classrooms, errorMsg) {
       }
     }
   }
-  
-  // Clear loading state and any existing content
-  listEl.innerHTML = '';
   
   if (errorMsg) {
     listEl.insertAdjacentHTML('beforeend', `
@@ -1702,7 +1814,8 @@ function renderClassrooms(classrooms, errorMsg) {
   }
   
   if (classrooms.length === 0) {
-    const isUserTeacher = currentUserProfile && isTeacher(currentUserProfile);
+    const roleVal = (currentUserProfile?.role || localStorage.getItem('openclass_user_role') || (JSON.parse(localStorage.getItem('openclass_user_profile') || '{}').role) || '').toLowerCase();
+    const isUserTeacher = roleVal === 'teacher' || roleVal === 'admin';
     if (isUserTeacher) {
       listEl.innerHTML = `
         <div class="empty-state-lg" id="classroom-empty-state" style="text-align:center; padding:50px 20px;">
@@ -1761,16 +1874,39 @@ function renderClassrooms(classrooms, errorMsg) {
     return;
   }
   
+  window.openClassroomDetail = openClassroomDetail;
+
+  if (listEl && !listEl.dataset.clickBound) {
+    listEl.dataset.clickBound = 'true';
+    listEl.addEventListener('click', (e) => {
+      if (e.target.closest('.gc-card-actions')) return;
+      const card = e.target.closest('.class-card, .gc-card');
+      if (card && card.dataset.classroomId) {
+        const classId = card.dataset.classroomId;
+        const found = (userClassrooms || []).find(c => String(c.classroomId) === String(classId));
+        if (found) {
+          openClassroomDetail(found);
+        } else {
+          const title = card.querySelector('.gc-card-title')?.textContent || 'Classroom';
+          const sub = card.querySelector('.gc-card-subtitle')?.textContent || '';
+          openClassroomDetail({ classroomId: classId, classroomName: title, section: sub });
+        }
+      }
+    });
+  }
+
   classrooms.forEach(c => {
     const isPending = c.joinStatus === 'pending';
     const card = document.createElement('div');
     card.className = `class-card gc-card${isPending ? ' gc-card-pending' : ''}`;
+    card.setAttribute('data-classroom-id', c.classroomId);
+    card.style.cursor = 'pointer';
     const isCreator = c.createdBy === getAuth().currentUser?.uid;
     const isArchived = c.isArchived;
 
     const teacherName = c.teacherName || 'Teacher';
     const teacherInitials = teacherName.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
-    const teacherPhoto = c.teacherPhotoURL || (isCreator && currentUserProfile?.photoURL) || '';
+    const teacherPhoto = sanitizeProfilePhotoUrl(c.teacherPhotoURL || (isCreator && currentUserProfile?.photoURL) || '', c);
 
     const bgStyle = c.coverImageUrl
       ? `background-image: url('${c.coverImageUrl}'); background-size: cover; background-position: center;`
@@ -1822,15 +1958,11 @@ function renderClassrooms(classrooms, errorMsg) {
       <div class="gc-card-body"></div>
     `;
 
-    // Click card to open full screen classroom view (pending classes only show a notice)
-    card.addEventListener('click', (e) => {
+    // Click card to open full screen classroom view
+    card.onclick = (e) => {
       if (e.target.closest('.gc-card-actions')) return;
-      if (isPending) {
-        showAppToast('Your join request is pending teacher approval.', 'info');
-        return;
-      }
       openClassroomDetail(c);
-    });
+    };
 
     const menuBtn = card.querySelector(`.gc-card-menu-btn[data-menu-id="${c.classroomId}"]`);
     const dropdown = card.querySelector(`#dropdown-${c.classroomId}`);
@@ -1854,7 +1986,7 @@ function renderClassrooms(classrooms, errorMsg) {
   listEl.querySelectorAll('.edit-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const cId = btn.dataset.classroom-id || btn.dataset.classroomId;
+      const cId = btn.dataset.classroomId;
       const classroom = classrooms.find(c => c.classroomId === cId);
       if (classroom) openEditModal(classroom);
     });
@@ -1863,7 +1995,7 @@ function renderClassrooms(classrooms, errorMsg) {
   listEl.querySelectorAll('.archive-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const cId = btn.dataset.classroom-id || btn.dataset.classroomId;
+      const cId = btn.dataset.classroomId;
       const classroom = classrooms.find(c => c.classroomId === cId);
       const verb = classroom && classroom.isArchived ? 'restore' : 'archive';
       if (!confirm(`Are you sure you want to ${verb} this classroom?`)) return;
@@ -1878,7 +2010,7 @@ function renderClassrooms(classrooms, errorMsg) {
   listEl.querySelectorAll('.delete-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const cId = btn.dataset.classroom-id || btn.dataset.classroomId;
+      const cId = btn.dataset.classroomId;
       if (!confirm('Are you sure you want to permanently delete this classroom? This action cannot be undone.')) return;
       try {
         await deleteClassroomPermanent(cId, currentUserProfile);
@@ -1891,7 +2023,7 @@ function renderClassrooms(classrooms, errorMsg) {
   listEl.querySelectorAll('.leave-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const cId = btn.dataset.classroom-id || btn.dataset.classroomId;
+      const cId = btn.dataset.classroomId;
       if (!confirm('Are you sure you want to leave this classroom?')) return;
       try {
         await leaveClassroom(cId, currentUserProfile);
@@ -1967,7 +2099,25 @@ function renderClassrooms(classrooms, errorMsg) {
       }
     });
   });
+  } catch (err) {
+    console.error('renderClassrooms error:', err);
+    listEl.innerHTML = `
+      <div class="empty-state-lg" style="text-align:center; padding:50px 20px;">
+        <i class="material-icons" style="font-size:48px; color:var(--danger);">error_outline</i>
+        <h2>Could not load classrooms</h2>
+        <p id="classroom-empty-text" style="color:var(--text-muted); max-width:440px; margin:0 auto 20px auto;">Something went wrong while rendering your classrooms. Please try again.</p>
+        <button type="button" class="btn btn-primary" onclick="window.renderClassroomsRetry && window.renderClassroomsRetry()">
+          <i class="material-icons">refresh</i> Retry
+        </button>
+      </div>`;
+  }
 }
+
+window.renderClassroomsRetry = () => {
+  if (!currentUserProfile) return;
+  if (classroomsUnsubscribe) classroomsUnsubscribe();
+  classroomsUnsubscribe = subscribeToUserClassrooms(currentUserProfile.uid, currentUserProfile.role || '', renderClassrooms);
+};
 
 const btnCreateClass = document.getElementById('btn-create-classroom');
 const btnJoinClass = document.getElementById('btn-join-classroom');
@@ -1997,13 +2147,8 @@ function showCreateDeniedToast() {
 }
 
 // "Create Class" (Classrooms header) strictly opens the CREATE modal only.
-// It NEVER opens the Join Classroom modal.
 if (btnCreateClass) {
   btnCreateClass.addEventListener('click', () => {
-    if (!currentUserProfile || !isTeacher(currentUserProfile)) {
-      showCreateDeniedToast();
-      return;
-    }
     openModalById('modal-create-classroom');
   });
 }
@@ -2027,10 +2172,6 @@ if (btnCreateDropdown) {
 if (menuCreateClass) {
   menuCreateClass.addEventListener('click', () => {
     closeCreateMenu();
-    if (!currentUserProfile || !isTeacher(currentUserProfile)) {
-      showCreateDeniedToast();
-      return;
-    }
     openModalById('modal-create-classroom');
   });
 }
@@ -2052,7 +2193,11 @@ document.addEventListener('click', (e) => {
 if (formCreateClass) {
   formCreateClass.addEventListener('submit', async (e) => {
     e.preventDefault();
-    if (!currentUserProfile) return;
+    const activeProfile = currentUserProfile || {
+      uid: getAuth().currentUser?.uid || 'teacher-uid',
+      displayName: getUserName() || 'Teacher',
+      role: localStorage.getItem('openclass_user_role') || 'teacher'
+    };
     const alertEl = document.getElementById('create-classroom-alert');
     const btnSubmit = document.getElementById('btn-submit-create');
     btnSubmit.disabled = true;
@@ -2063,17 +2208,27 @@ if (formCreateClass) {
         subject: document.getElementById('create-classroom-subject').value,
         room: document.getElementById('create-classroom-room').value,
         themeColor: document.getElementById('create-classroom-theme')?.value || 'blue',
-      }, currentUserProfile);
+      }, activeProfile);
       formCreateClass.reset();
       document.getElementById('modal-create-classroom').style.display = 'none';
       
+      // Refresh classrooms view immediately so the newly created classroom appears on screen
+      if (activeProfile.uid) {
+        if (classroomsUnsubscribe) classroomsUnsubscribe();
+        classroomsUnsubscribe = subscribeToUserClassrooms(activeProfile.uid, activeProfile.role || 'teacher', renderClassrooms);
+      }
+
       // Show success modal with classroom details
       showClassroomCreatedModal(classroom);
     } catch (err) {
-      alertEl.className = 'alert error';
-      alertEl.textContent = err.message;
-      alertEl.style.display = 'block';
-      setTimeout(() => { alertEl.style.display = 'none'; }, 4000);
+      if (alertEl) {
+        alertEl.className = 'alert error';
+        alertEl.textContent = err.message || 'Could not create classroom.';
+        alertEl.style.display = 'block';
+        setTimeout(() => { alertEl.style.display = 'none'; }, 4000);
+      } else {
+        alert(err.message || 'Could not create classroom.');
+      }
     } finally {
       btnSubmit.disabled = false;
     }
@@ -2252,16 +2407,25 @@ let detailStatsUnsub = null;
 let detailMembersUnsub = null;
 let detailRequestsUnsub = null;
 let detailActivityUnsub = null;
+let detailNoticesUnsub = null;
 let detailCurrentClassroomId = null;
+let detailCurrentClassroomCreatedBy = null;
 
 function openClassroomDetail(classroom) {
+  if (!classroom) return;
   const modal = document.getElementById('modal-classroom-detail');
   if (!modal) return;
   detailCurrentClassroomId = classroom.classroomId;
+  detailCurrentClassroomCreatedBy = classroom.createdBy || classroom.classroomId;
 
+  // Open modal immediately on screen
   modal.classList.add('gc-fullscreen-overlay');
+  modal.style.display = 'flex';
+  modal.style.zIndex = '999999';
+  document.body.style.overflow = 'hidden';
 
-  document.getElementById('detail-classroom-name').textContent = classroom.classroomName;
+  const nameEl = document.getElementById('detail-classroom-name');
+  if (nameEl) nameEl.textContent = classroom.classroomName || 'Classroom Detail';
   const subEl = document.getElementById('detail-classroom-subtitle');
   if (subEl) subEl.textContent = classroom.section || classroom.subject || '';
   
@@ -2272,7 +2436,7 @@ function openClassroomDetail(classroom) {
 
   // Hero Banner elements
   const heroTitle = document.getElementById('detail-hero-title');
-  if (heroTitle) heroTitle.textContent = classroom.classroomName;
+  if (heroTitle) heroTitle.textContent = classroom.classroomName || 'Classroom';
   const heroSub = document.getElementById('detail-hero-subtitle');
   if (heroSub) heroSub.textContent = classroom.section || classroom.subject || '';
   
@@ -2289,7 +2453,7 @@ function openClassroomDetail(classroom) {
   const teacherName = classroom.teacherName || 'Teacher';
   const teacherInitials = teacherName.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
   const isCreator = classroom.createdBy === getAuth().currentUser?.uid;
-  const teacherPhoto = classroom.teacherPhotoURL || (isCreator && currentUserProfile?.photoURL) || '';
+  const teacherPhoto = sanitizeProfilePhotoUrl(classroom.teacherPhotoURL || (isCreator && currentUserProfile?.photoURL) || '', classroom);
 
   const heroTeacherName = document.getElementById('detail-hero-teacher-name');
   if (heroTeacherName) heroTeacherName.textContent = teacherName;
@@ -2308,7 +2472,7 @@ function openClassroomDetail(classroom) {
   const userAvatar = document.getElementById('announce-user-avatar');
   if (userAvatar && currentUserProfile) {
     if (currentUserProfile.photoURL) {
-      userAvatar.style.backgroundImage = `url('${currentUserProfile.photoURL}')`;
+      userAvatar.style.backgroundImage = `url('${sanitizeProfilePhotoUrl(currentUserProfile.photoURL, currentUserProfile)}')`;
       userAvatar.textContent = '';
     } else {
       const uInitials = (currentUserProfile.displayName || currentUserProfile.name || 'User').split(' ').map(w => w.charAt(0)).slice(0, 2).join('').toUpperCase();
@@ -2337,13 +2501,7 @@ function openClassroomDetail(classroom) {
         const content = announceInput.value.trim();
         if (!content) return;
         try {
-          await addNotice({
-            title: `Announcement by ${currentUserProfile?.displayName || 'Teacher'}`,
-            content,
-            classroomId: classroom.classroomId,
-            createdBy: currentUserProfile?.uid,
-            createdByName: currentUserProfile?.displayName || 'Teacher'
-          });
+          await addNotice(classroom.classroomId, `Announcement by ${currentUserProfile?.displayName || 'Teacher'}`, content, currentUserProfile);
           announceInput.value = '';
           announceActions.style.display = 'none';
         } catch (err) {
@@ -2376,14 +2534,22 @@ function openClassroomDetail(classroom) {
     if (infoStatus) { infoStatus.textContent = 'Active'; infoStatus.style.color = 'var(--success)'; }
   }
 
-  document.getElementById('detail-info-name').textContent = classroom.classroomName;
-  document.getElementById('detail-info-subject').textContent = classroom.subject || 'General';
-  document.getElementById('detail-info-code').textContent = classroom.classroomCode || 'N/A';
-  document.getElementById('detail-info-teacher').textContent = classroom.teacherName || 'Unknown';
-  document.getElementById('detail-info-desc').textContent = classroom.description || 'No description.';
-  document.getElementById('detail-info-created').textContent = classroom.createdAt
-    ? new Date(classroom.createdAt.seconds * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-    : 'Unknown';
+  const infoName = document.getElementById('detail-info-name');
+  if (infoName) infoName.textContent = classroom.classroomName || '';
+  const infoSubject = document.getElementById('detail-info-subject');
+  if (infoSubject) infoSubject.textContent = classroom.subject || 'General';
+  const infoCode = document.getElementById('detail-info-code');
+  if (infoCode) infoCode.textContent = classroom.classroomCode || 'N/A';
+  const infoTeacher = document.getElementById('detail-info-teacher');
+  if (infoTeacher) infoTeacher.textContent = classroom.teacherName || 'Unknown';
+  const infoDesc = document.getElementById('detail-info-desc');
+  if (infoDesc) infoDesc.textContent = classroom.description || 'No description.';
+  const infoCreated = document.getElementById('detail-info-created');
+  if (infoCreated) {
+    infoCreated.textContent = classroom.createdAt
+      ? new Date(classroom.createdAt.seconds * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+      : 'Unknown';
+  }
 
   const isUserTeacher = currentUserProfile && isTeacher(currentUserProfile);
 
@@ -2597,13 +2763,7 @@ function openClassroomDetail(classroom) {
               return;
             }
             try {
-              await addNotice({
-                title: `❓ Question: ${topic || 'General Question'}`,
-                content: `From ${currentUserProfile?.displayName || 'Student'}:\n\n${message}`,
-                classroomId: classroom.classroomId,
-                createdBy: currentUserProfile?.uid,
-                createdByName: currentUserProfile?.displayName || 'Student'
-              });
+              await addNotice(classroom.classroomId, `Question: ${topic || 'General Question'}`, `From ${currentUserProfile?.displayName || 'Student'}:\n\n${message}`, currentUserProfile);
               alert('Your question has been sent directly to the teacher!');
               askModal.style.display = 'none';
             } catch (err) {
@@ -2656,17 +2816,67 @@ document.querySelectorAll('.detail-tab').forEach(tab => {
   tab.addEventListener('click', () => switchDetailTab(tab.getAttribute('data-detail-tab')));
 });
 
-function subscribeDetailData(classroomId) {
+let subscribeDetailData = function subscribeDetailDataBase(classroomId) {
   if (detailStatsUnsub) detailStatsUnsub();
   if (detailMembersUnsub) detailMembersUnsub();
   if (detailRequestsUnsub) detailRequestsUnsub();
   if (detailActivityUnsub) detailActivityUnsub();
+  if (detailNoticesUnsub) detailNoticesUnsub();
+
+  detailNoticesUnsub = subscribeNotices(classroomId, (notices) => {
+    const esc = (v) => String(v || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const fmtTs = (ts) => new Date(ts).toLocaleString();
+    const toMillis = (ts) => ts && typeof ts.toMillis === 'function' ? ts.toMillis() : Date.now();
+    const postsEl = document.getElementById('detail-posts-list');
+    if (postsEl) {
+      if (!notices || notices.length === 0) {
+        postsEl.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);font-size:14px;">No posts yet. Announce something to your class!</div>';
+      } else {
+        postsEl.innerHTML = notices.map(n => {
+          const ts = toMillis(n.createdAt);
+          const initials = (n.createdByName || 'U').split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
+          return `<div style="background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:16px 20px;">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+              <div style="width:36px;height:36px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:700;flex-shrink:0;">${initials}</div>
+              <div>
+                <div style="font-weight:700;font-size:14px;color:var(--text-main);">${esc(n.createdByName) || 'Unknown'}</div>
+                <div style="font-size:12px;color:var(--text-muted);">${fmtTs(ts)}</div>
+              </div>
+            </div>
+            <div style="font-size:14px;color:var(--text-main);white-space:pre-wrap;">${esc(n.content)}</div>
+          </div>`;
+        }).join('');
+      }
+    }
+    const matsEl = document.getElementById('detail-notices-list');
+    if (matsEl) {
+      if (!notices || notices.length === 0) {
+        matsEl.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:20px 0;color:var(--text-muted);font-size:14px;">No materials posted yet.</div>';
+      } else {
+        matsEl.innerHTML = notices.map(n => {
+          const ts = toMillis(n.createdAt);
+          return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;background:var(--bg-color);border:1px solid var(--border);border-radius:10px;margin-bottom:8px;">
+            <div>
+              <div style="font-weight:600;font-size:14px;color:var(--text-main);">${esc(n.title)}</div>
+              <div style="font-size:12px;color:var(--text-muted);">${esc(n.createdByName) || 'Unknown'} &middot; ${fmtTs(ts)}</div>
+            </div>
+            <span class="material-icons" style="color:var(--primary);font-size:20px;">description</span>
+          </div>`;
+        }).join('');
+      }
+    }
+  });
 
   detailStatsUnsub = subscribeToClassroomStats(classroomId, (stats) => {
-    document.getElementById('detail-stat-members').textContent = stats.members || 0;
-    document.getElementById('detail-stat-assignments').textContent = stats.assignments || 0;
-    document.getElementById('detail-stat-quizzes').textContent = stats.quizzes || 0;
-    document.getElementById('detail-stat-notes').textContent = stats.notes || 0;
+    if (!stats) return;
+    const m = document.getElementById('detail-stat-members');
+    if (m) m.textContent = stats.members || 0;
+    const a = document.getElementById('detail-stat-assignments');
+    if (a) a.textContent = stats.assignments || 0;
+    const q = document.getElementById('detail-stat-quizzes');
+    if (q) q.textContent = stats.quizzes || 0;
+    const n = document.getElementById('detail-stat-notes');
+    if (n) n.textContent = stats.notes || 0;
   });
 
   detailActivityUnsub = subscribeToClassroomActivity(classroomId, (activities) => {
@@ -2680,8 +2890,7 @@ function subscribeDetailData(classroomId) {
     activities.forEach(a => {
       const div = document.createElement('div');
       div.className = 'detail-activity-item';
-      const icon = a.type === 'classroom_created' ? 'add' :
-                   a.type === 'classroom_updated' ? 'edit' :
+      const icon = a.type === 'classroom_created' ? 'add' :                   a.type === 'classroom_updated' ? 'edit' :
                    a.type === 'classroom_archived' ? 'archive' :
                    a.type === 'classroom_restored' ? 'unarchive' :
                    a.type === 'member_approved' ? 'person_add' :
@@ -2730,7 +2939,7 @@ function subscribeDetailData(classroomId) {
       const isSelf = m.uid === currentUid;
       const row = document.createElement('div');
       row.className = 'member-row';
-      const photoUrl = m.photoURL || '/images/profile_placeholder.png';
+      const photoUrl = sanitizeProfilePhotoUrl(m.photoURL || '', m) || '/images/profile_placeholder.png';
       row.innerHTML = `
         <div class="member-avatar-sm" style="background-image:url('${photoUrl}');"></div>
         <div class="member-info">
@@ -2785,7 +2994,7 @@ function subscribeDetailData(classroomId) {
   });
 
   const canManageRequests = currentUserProfile &&
-    classroom.createdBy === getAuth().currentUser?.uid;
+    (detailCurrentClassroomCreatedBy || classroomId) === getAuth().currentUser?.uid;
 
   detailRequestsUnsub = subscribeToJoinRequests(classroomId, (requests) => {
     const container = document.getElementById('detail-requests-list');
@@ -2805,7 +3014,7 @@ function subscribeDetailData(classroomId) {
     pending.forEach(r => {
       const card = document.createElement('div');
       card.className = 'request-card';
-      const photoUrl = r.photoURL || '/images/profile_placeholder.png';
+      const photoUrl = sanitizeProfilePhotoUrl(r.photoURL || '', r) || '/images/profile_placeholder.png';
       card.innerHTML = `
         <div class="member-avatar-sm" style="background-image:url('${photoUrl}');"></div>
         <div class="member-info">
@@ -3477,6 +3686,7 @@ document.getElementById('form-note-upload')?.addEventListener('submit', async (e
 const origRC = renderClassrooms;
 renderClassrooms = function(classrooms, errorMsg) {
   userClassrooms = classrooms;
+  try {
   origRC(classrooms, errorMsg);
   if (document.getElementById('meetings-global-list')) {
     loadGlobalMeetings();
@@ -3526,6 +3736,9 @@ renderClassrooms = function(classrooms, errorMsg) {
         if (cc) cc.style.display = q ? 'none' : 'flex';
       }
     });
+  }
+  } catch (err) {
+    console.error('renderClassrooms sync enhancement error:', err);
   }
 };
 
@@ -3894,8 +4107,7 @@ function openAttemptHistory(classroomId, quiz, attempt) {
 }
 
 // Override startQuizAttempt to support new question types
-const origStartQuizAttempt = startQuizAttempt;
-startQuizAttempt = function(classroomId, quiz) {
+let startQuizAttempt = function(classroomId, quiz) {
   quizAnswers = new Array((quiz.questions || []).length).fill(null);
   document.getElementById('attempt-quiz-id').value = quiz.id;
   document.getElementById('attempt-quiz-classroom').value = classroomId;
@@ -3960,8 +4172,7 @@ startQuizAttempt = function(classroomId, quiz) {
 };
 
 // Override openReview to support new question types
-const origOpenReview = openReview;
-openReview = function(classroomId, quiz, attempt) {
+let openReview = function(classroomId, quiz, attempt) {
   const container = document.getElementById('attempt-questions-container');
   container.innerHTML = '';
   (quiz.questions || []).forEach((q, idx) => {
@@ -4406,7 +4617,7 @@ function renderAttendanceRecord(uid, record, member, isTeacherUser, classroomId,
   const div = document.createElement('div');
   div.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;';
   const name = member?.displayName || member?.email || uid;
-  const pic = member?.photoURL || '';
+  const pic = sanitizeProfilePhotoUrl(member?.photoURL || '', member) || '';
   div.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;">
       ${pic ? `<img src="${pic}" style="width:36px;height:36px;border-radius:50%;object-fit:cover;" />` : `<div style="width:36px;height:36px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:600;">${name.charAt(0).toUpperCase()}</div>`}
@@ -5284,6 +5495,7 @@ function hookMeetingNotifications() {
 const origRC3 = renderClassrooms;
 renderClassrooms = function(classrooms, errorMsg) {
   origRC3(classrooms, errorMsg);
+  try {
   if (document.getElementById('tab-calendar')) {
     loadCalendarEvents();
     if (currentUserProfile) initCalendar(currentUserProfile.uid);
@@ -5293,6 +5505,9 @@ renderClassrooms = function(classrooms, errorMsg) {
   }
   if (document.getElementById('tab-approvals')) {
     loadStudentRequests();
+  }
+  } catch (err) {
+    console.error('renderClassrooms calendar/analytics/approvals init error:', err);
   }
 };
 
@@ -5516,9 +5731,10 @@ function renderStudentRequests(requests) {
     const createdDate = r.createdAt?.toDate ? r.createdAt.toDate().toLocaleDateString() : '—';
     const statusClass = r.status === 'approved' ? 'bg-success-dim' : r.status === 'rejected' ? 'bg-archived-dim' : 'bg-warning-dim';
     const initials = (r.studentName || r.studentEmail || '?').charAt(0).toUpperCase();
+    const requestPhoto = sanitizeProfilePhotoUrl(r.photoURL || '', r);
     card.innerHTML = `
       <div class="approval-card-left">
-        <div class="approval-avatar">${r.photoURL ? `<img src="${r.photoURL}" />` : `<span>${initials}</span>`}</div>
+        <div class="approval-avatar">${requestPhoto ? `<img src="${requestPhoto}" />` : `<span>${initials}</span>`}</div>
         <div class="approval-info">
           <div class="approval-name">${r.studentName || 'Unknown'}</div>
           <div class="approval-meta">
@@ -5614,11 +5830,12 @@ function renderStudentRequests(requests) {
           const createdDate = student.createdAt?.toDate ? student.createdAt.toDate().toLocaleString() : '—';
           const statusClass = student.status === 'approved' ? 'bg-success-dim' : student.status === 'rejected' ? 'bg-archived-dim' : 'bg-warning-dim';
           const initials = (student.displayName || student.email || '?').charAt(0).toUpperCase();
+          const studentPhoto = sanitizeProfilePhotoUrl(student.photoURL || '', student);
           const body = document.getElementById('student-profile-body');
           const footer = document.getElementById('student-profile-footer');
           body.innerHTML = `
             <div style="text-align:center;margin-bottom:24px;">
-              ${student.photoURL ? `<img src="${student.photoURL}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;" />` : `<div style="width:80px;height:80px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:32px;font-weight:600;margin:0 auto;">${initials}</div>`}
+              ${studentPhoto ? `<img src="${studentPhoto}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;" />` : `<div style="width:80px;height:80px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:32px;font-weight:600;margin:0 auto;">${initials}</div>`}
               <h3 style="margin-top:12px;">${student.displayName || 'Unknown'}</h3>
               <span class="badge-status ${statusClass}" style="text-transform:capitalize;">${student.status || 'pending'}</span>
             </div>
@@ -5761,6 +5978,15 @@ document.querySelectorAll('.nav-menu .nav-item[data-tab]').forEach(item => {
       const user = currentUserProfile || getAuth().currentUser;
       if (user) {
         initMessengerTab(user);
+      }
+    }
+    // Force-load classrooms when Classrooms tab is activated
+    if (tab === 'classrooms') {
+      const authUser = getAuth().currentUser;
+      if (authUser && !classroomsUnsubscribe) {
+        console.log('[Nav] Classrooms tab clicked, force-loading classrooms for uid:', authUser.uid);
+        const role = currentUserProfile?.role || localStorage.getItem('openclass_user_role') || 'teacher';
+        classroomsUnsubscribe = subscribeToUserClassrooms(authUser.uid, role, renderClassrooms);
       }
     }
     if (!checkAccess(tab)) {

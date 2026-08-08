@@ -1,8 +1,15 @@
 import express from 'express';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { verifyAuthToken } from '../middleware/auth.js';
 
 const router = express.Router({ mergeParams: true });
+
+function normalizeDueDate(dueDate) {
+  if (!dueDate) return null;
+  if (typeof dueDate.toDate === 'function' && typeof dueDate.toMillis === 'function') return dueDate;
+  const d = dueDate instanceof Date ? dueDate : new Date(dueDate);
+  return isNaN(d.getTime()) ? null : Timestamp.fromDate(d);
+}
 
 // POST /api/classrooms/:classId/assignments - Create assignment
 router.post('/', verifyAuthToken, async (req, res) => {
@@ -21,7 +28,7 @@ router.post('/', verifyAuthToken, async (req, res) => {
     const assignmentData = {
       title: title.trim(),
       description: description || '',
-      dueDate: dueDate || null,
+      dueDate: normalizeDueDate(dueDate),
       maxMarks: Number(maxMarks) || 0,
       files: files || [],
       status: status || 'published',
@@ -65,7 +72,13 @@ router.get('/', verifyAuthToken, async (req, res) => {
       .orderBy('createdAt', 'desc')
       .get();
 
-    const assignments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const assignments = snapshot.docs.map(doc => {
+      const data = doc.data();
+      if (data.dueDate && typeof data.dueDate.toMillis === 'function') {
+        data.dueDate = new Date(data.dueDate.toMillis()).toISOString();
+      }
+      return { id: doc.id, ...data };
+    });
     return res.json(assignments);
   } catch (error) {
     console.error('Error fetching assignments:', error);
@@ -93,9 +106,10 @@ router.post('/:id/submit', verifyAuthToken, async (req, res) => {
       return res.status(400).json({ error: 'This assignment is closed for submissions.' });
     }
 
-    const dueDate = assignment.dueDate ? new Date(assignment.dueDate).getTime() : null;
-    const now = Date.now();
-    const isLate = dueDate ? now > dueDate : false;
+    const dueMillis = assignment.dueDate
+      ? (typeof assignment.dueDate.toMillis === 'function' ? assignment.dueDate.toMillis() : new Date(assignment.dueDate).getTime())
+      : null;
+    const isLate = dueMillis ? Date.now() > dueMillis : false;
 
     const subRef = assignmentRef.collection('submissions').doc(user.uid);
     const existingSnap = await subRef.get();

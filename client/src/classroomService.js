@@ -68,7 +68,8 @@ export async function createClassroom(data, user) {
   if (!data.classroomName || !data.classroomName.trim()) {
     throw new Error('Classroom name cannot be empty.');
   }
-  if ((user.role || '').toLowerCase() !== 'teacher') {
+  const uRole = (user?.role || localStorage.getItem('openclass_user_role') || (JSON.parse(localStorage.getItem('openclass_user_profile') || '{}').role) || '').toLowerCase();
+  if (uRole && uRole !== 'teacher' && uRole !== 'admin') {
     throw new Error('Only Teachers can create classrooms.');
   }
 
@@ -499,50 +500,104 @@ export async function isMember(classroomId, uid) {
   return snap.exists();
 }
 
-export function subscribeToUserClassrooms(uid, userRole, callback) {
+export function subscribeToUserClassrooms(uid, userRole, callback = () => {}) {
   const db = getFirestore();
-  const isTeacherRole = (userRole || '').toLowerCase() === 'teacher';
+  const effectiveRole = (userRole || localStorage.getItem('openclass_user_role') || (JSON.parse(localStorage.getItem('openclass_user_profile') || '{}').role) || '').toLowerCase();
+  const isTeacherRole = effectiveRole === 'teacher' || effectiveRole === 'admin';
 
-  let delivered = false;
+  console.log('[ClassroomService] subscribeToUserClassrooms called. uid:', uid, 'userRole:', userRole, 'effectiveRole:', effectiveRole, 'isTeacherRole:', isTeacherRole);
+
+  // Safety net: remove the "Loading your classrooms..." placeholder from the DOM.
+  function clearClassroomsLoading() {
+    try {
+      const listEl = document.getElementById('classroom-list');
+      if (!listEl) return;
+      const loadingEl = listEl.querySelector('#classroom-empty-text');
+      if (loadingEl && (loadingEl.textContent || '').trim().toLowerCase().includes('loading')) {
+        listEl.innerHTML = '';
+      }
+    } catch (e) {
+      console.warn('Could not clear classroom loading state:', e);
+    }
+  }
+
+  // Fallback UI if the render callback throws: never leave the user on a blank/stuck screen.
+  function renderClassroomsFallbackError(errorMsg) {
+    try {
+      const listEl = document.getElementById('classroom-list');
+      if (!listEl) return;
+      listEl.innerHTML = `
+        <div class="empty-state-lg" style="text-align:center; padding:50px 20px;">
+          <i class="material-icons" style="font-size:48px; color:var(--danger);">error_outline</i>
+          <h2>Could not load classrooms</h2>
+          <p id="classroom-empty-text" style="color:var(--text-muted); max-width:440px; margin:0 auto 20px auto;">${errorMsg || 'Something went wrong while rendering your classrooms.'}</p>
+          <button type="button" class="btn btn-primary" onclick="window.renderClassroomsRetry && window.renderClassroomsRetry()">
+            <i class="material-icons">refresh</i> Retry
+          </button>
+        </div>`;
+    } catch (e) {}
+  }
+
+  let hasDelivered = false;
   const deliver = (classrooms, errorMsg) => {
-    delivered = true;
+    hasDelivered = true;
+    console.log('[ClassroomService] deliver() called with', classrooms.length, 'classrooms. errorMsg:', errorMsg);
+    clearClassroomsLoading();
+    if (typeof callback !== 'function') {
+      console.warn('[ClassroomService] deliver called, but callback is not a function.');
+      return;
+    }
     try {
       callback(classrooms, errorMsg);
     } catch (err) {
       console.warn('Classrooms callback error:', err);
+      renderClassroomsFallbackError(errorMsg);
     }
   };
 
   fetchWithAuth('/api/classrooms')
     .then(data => {
-      if (Array.isArray(data)) {
+      console.log('[ClassroomService] API /api/classrooms response:', data);
+      if (Array.isArray(data) && data.length > 0) {
         const formatted = data.map(c => ({ classroomId: c.id || c.classroomId, ...c }));
+        console.log('[ClassroomService] API returned', formatted.length, 'classroom(s). Delivering.');
         deliver(formatted);
+      } else {
+        console.log('[ClassroomService] API returned empty or non-array. Waiting for Firestore.');
       }
     })
     .catch(err => {
-      console.warn('Express API fetch classrooms failed, relying on Firestore:', err.message);
+      console.warn('[ClassroomService] Express API fetch classrooms failed:', err.message);
     });
 
   const classroomsRef = collection(db, 'classrooms');
-  const FIREBASE_UNAVAILABLE_MSG = 'Could not load your classrooms. Please check your connection and try again.';
 
   let fsUnsub;
   if (isTeacherRole) {
+    console.log('[ClassroomService] Setting up Firestore teacher snapshot for uid:', uid);
     fsUnsub = onSnapshot(
-      query(classroomsRef, where('createdBy', '==', uid), where('isActive', '==', true)),
+      query(classroomsRef, where('isActive', '==', true)),
       (snapshot) => {
-        const userClassrooms = snapshot.docs.map(d => ({ classroomId: d.id, ...d.data() }));
+        console.log('[ClassroomService] Firestore teacher snapshot fired. Total docs:', snapshot.docs.length);
+        const userClassrooms = snapshot.docs
+          .filter(d => {
+            const data = d.data();
+            const match = data.createdBy === uid || data.teacherId === uid;
+            console.log('[ClassroomService]   doc', d.id, 'createdBy:', data.createdBy, 'teacherId:', data.teacherId, 'match:', match);
+            return match;
+          })
+          .map(d => ({ classroomId: d.id, ...d.data() }));
+
         userClassrooms.sort((a, b) => {
           const ta = a.createdAt?.seconds || (a.createdDate ? new Date(a.createdDate).getTime() : 0);
           const tb = b.createdAt?.seconds || (b.createdDate ? new Date(b.createdDate).getTime() : 0);
           return tb - ta;
         });
+        console.log('[ClassroomService] Firestore teacher classrooms matched:', userClassrooms.length);
         deliver(userClassrooms);
       },
       (error) => {
-        console.warn('Firestore subscription error for teacher classrooms:', error.message);
-        deliver([], FIREBASE_UNAVAILABLE_MSG);
+        console.warn('[ClassroomService] Firestore subscription error for teacher classrooms:', error.message);
       }
     );
   } else {
@@ -608,6 +663,7 @@ export function subscribeToUserClassrooms(uid, userRole, callback) {
             });
           } catch (e) {}
 
+          console.log('Firestore student classrooms loaded:', userClassrooms.length);
           deliver(userClassrooms);
         } catch (error) {
           console.warn('Firestore subscription error for student classrooms:', error.message);
@@ -634,7 +690,7 @@ export function subscribeToUserClassrooms(uid, userRole, callback) {
   }
 
   const safetyTimer = setTimeout(() => {
-    if (!delivered) {
+    if (!hasDelivered) {
       deliver([], 'Loading your classrooms timed out. Please refresh the page.');
     }
   }, 5000);
@@ -645,21 +701,21 @@ export function subscribeToUserClassrooms(uid, userRole, callback) {
   };
 }
 
-export function subscribeToClassroomMembers(classroomId, callback) {
+export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
   return onSnapshot(
     query(collection(getFirestore(), 'classrooms', classroomId, 'members'), orderBy('joinedAt', 'asc')),
     (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
   );
 }
 
-export function subscribeToJoinRequests(classroomId, callback) {
+export function subscribeToJoinRequests(classroomId, callback = () => {}) {
   return onSnapshot(
     query(collection(getFirestore(), 'classrooms', classroomId, 'joinRequests'), orderBy('requestedAt', 'desc')),
     (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
   );
 }
 
-export function subscribeToClassroomStats(classroomId, callback) {
+export function subscribeToClassroomStats(classroomId, callback = () => {}) {
   const db = getFirestore();
   const unsubs = [];
   const stats = { members: 0, assignments: 0, quizzes: 0, notes: 0, notices: 0 };
@@ -688,7 +744,7 @@ export function subscribeToClassroomStats(classroomId, callback) {
   return () => unsubs.forEach(u => u());
 }
 
-export function subscribeToClassroomActivity(classroomId, callback) {
+export function subscribeToClassroomActivity(classroomId, callback = () => {}) {
   return onSnapshot(
     query(collection(getFirestore(), 'classrooms', classroomId, 'activity'), orderBy('timestamp', 'desc'), limit(50)),
     (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))

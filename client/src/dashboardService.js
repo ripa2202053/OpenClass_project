@@ -41,8 +41,15 @@ async function getUserClassroomIds(uid) {
   );
   const ids = [];
   const promises = classroomsSnap.docs.map(async (c) => {
-    const memberSnap = await getDoc(doc(db, 'classrooms', c.id, 'members', uid));
-    if (memberSnap.exists()) ids.push(c.id);
+    const data = c.data();
+    if (data.createdBy === uid || data.teacherId === uid) {
+      ids.push(c.id);
+      return;
+    }
+    try {
+      const memberSnap = await getDoc(doc(db, 'classrooms', c.id, 'members', uid));
+      if (memberSnap.exists()) ids.push(c.id);
+    } catch (e) {}
   });
   await Promise.all(promises);
   return ids;
@@ -92,11 +99,11 @@ export function subscribeDashboardData(uid, role, callback) {
         let pending = 0;
         let totalStudents = 0;
         snap.docs.forEach(d => {
-          if (classroomIds.includes(d.id)) {
+          const cData = d.data();
+          if (classroomIds.includes(d.id) || cData.createdBy === uid || cData.teacherId === uid) {
             count++;
-            const cData = d.data();
-            if (role === 'teacher' && cData.createdBy === uid) {
-              totalStudents += (cData.memberCount || 1) - 1;
+            if (cData.createdBy === uid || cData.teacherId === uid) {
+              totalStudents += Math.max(0, (cData.memberCount || 1) - 1);
             }
           }
         });
@@ -239,4 +246,12 @@ export async function addNotice(classroomId, title, content, user) {
   } catch (e) {
     console.warn('Could not add notice:', e);
   }
+}
+
+export function subscribeNotices(classroomId, callback) {
+  const db = getFirestore();
+  return onSnapshot(
+    query(collection(db, 'classrooms', classroomId, 'notices'), orderBy('createdAt', 'desc')),
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+  );
 }

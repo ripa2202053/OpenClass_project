@@ -16,6 +16,15 @@ import { getAuth, updateProfile as updateAuthProfile } from 'firebase/auth';
 
 export const ROLES = { TEACHER: 'teacher', STUDENT: 'student' };
 
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Storage operation timed out')), ms)
+    )
+  ]);
+}
+
 export function normalizeRole(role) {
   if (!role) return '';
   const normalized = String(role).toLowerCase();
@@ -83,6 +92,42 @@ export function clearProfileFromStorage(uid) {
   } catch (e) { /* ignore */ }
 }
 
+export function isLocalhost() {
+  if (typeof window === 'undefined') return false;
+  const hostname = window.location.hostname || '';
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.');
+}
+
+export function getInitialsSvgDataUrl(profile) {
+  const name = (profile && (profile.displayName || profile.name)) || 'User';
+  const initials = name.trim().split(/\s+/).map(w => w.charAt(0)).slice(0, 2).join('').toUpperCase() || 'U';
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180">' +
+    '<rect width="100%" height="100%" fill="#2563eb"/>' +
+    '<text x="50%" y="50%" dy=".35em" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" ' +
+    'font-size="64" text-anchor="middle" font-weight="600">' + initials + '</text></svg>';
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+/**
+ * Returns a render-safe avatar URL. On localhost (no Storage CORS rules),
+ * Firebase Storage URLs are never fetched — they are replaced immediately
+ * with an inline initials-SVG data URL to avoid CORS errors / broken images.
+ */
+export function sanitizeProfilePhotoUrl(photoURL, profile) {
+  if (!photoURL) return '';
+  if (typeof photoURL === 'string' && photoURL.startsWith('data:')) return photoURL;
+  if (
+    isLocalhost() &&
+    typeof photoURL === 'string' &&
+    photoURL.startsWith('https://firebasestorage.googleapis.com')
+  ) {
+    console.log('[userService] Localhost detected: skipping Firebase Storage fetch for photoURL. Using initials fallback.');
+    return getInitialsSvgDataUrl(profile);
+  }
+  return photoURL;
+}
+
 export async function createUser(user, selectedRole, extraData = {}) {
   if (!user || !user.uid) return null;
   const db = getFirestore();
@@ -120,7 +165,9 @@ export async function createUser(user, selectedRole, extraData = {}) {
       studentId: isNewStudent ? (extraData.studentId || '') : '',
       teacherId: !isNewStudent ? (extraData.teacherId || '') : '',
       semester: isNewStudent ? (extraData.semester || '') : '',
+      session: isNewStudent ? (extraData.session || '') : '',
       designation: !isNewStudent ? (extraData.designation || '') : '',
+      officeRoom: !isNewStudent ? (extraData.officeRoom || '') : '',
       status: isNewStudent ? 'pending' : 'approved',
       phone: extraData.phone || '',
       createdAt: serverTimestamp(),
@@ -172,7 +219,7 @@ export async function updateUser(uid, data) {
       ...data,
       updatedAt: serverTimestamp()
     };
-    await updateDoc(userRef, updatePayload);
+    await setDoc(userRef, updatePayload, { merge: true });
     return await getUser(uid);
   } catch (error) {
     console.error('Error updating user document:', error);
@@ -180,39 +227,75 @@ export async function updateUser(uid, data) {
   }
 }
 
-export async function updateProfile(uid, profileData, imageFile = null) {
+export async function updateProfile(uid, profileData, imageFile = null, fallbackDataUrl = null) {
   if (!uid) return null;
 
   let newPhotoURL = profileData.photoURL || '';
+  let photoUploadSkipped = false;
 
+  // 1) Isolate the optional storage upload so CORS/network/permission failures
+  //    can NEVER abort or block the Firestore text update below. A timeout also
+  //    guarantees a hung Storage request cannot stall the setDoc() write.
   if (imageFile) {
     try {
       const storage = getStorage();
       const storageRef = ref(storage, `profile_pics/${uid}/${Date.now()}_${imageFile.name}`);
-      await uploadBytesResumable(storageRef, imageFile);
-      newPhotoURL = await getDownloadURL(storageRef);
-      profileData.photoURL = newPhotoURL;
+      await withTimeout(uploadBytesResumable(storageRef, imageFile), 10000);
+      newPhotoURL = await withTimeout(getDownloadURL(storageRef), 10000);
     } catch (uploadError) {
-      console.error('Error uploading profile picture:', uploadError);
+      console.warn('Storage upload failed, keeping existing photoURL:', uploadError);
+      photoUploadSkipped = true;
+      // CORS/network blocked? Persist the pre-prepared Base64 data URL instead,
+      // so the avatar change is still saved without Storage access.
+      if (fallbackDataUrl) {
+        newPhotoURL = fallbackDataUrl;
+      }
     }
   }
 
+  // 2) Preserve the existing photoURL when no new photo was uploaded/provided,
+  //    so a CORS/skip path never wipes the user's avatar.
+  if (!newPhotoURL) {
+    try {
+      const db = getFirestore();
+      const existingSnap = await getDoc(doc(db, 'users', uid));
+      if (existingSnap.exists()) {
+        newPhotoURL = existingSnap.data().photoURL || '';
+      }
+    } catch (readError) {
+      console.warn('Could not read existing photoURL:', readError);
+    }
+    newPhotoURL = newPhotoURL || profileData.photoURL || '';
+  }
+  profileData.photoURL = newPhotoURL;
+
+  // 3) Update Firebase Auth profile displayName/photoURL (best-effort only).
+  //    Skip photoURL when it's a Base64 data URL — auth profiles are not suited
+  //    to storing large inline images.
   const auth = getAuth();
   if (auth.currentUser && auth.currentUser.uid === uid) {
     try {
-      await updateAuthProfile(auth.currentUser, {
-        displayName: profileData.displayName,
-        photoURL: newPhotoURL
-      });
+      const authPayload = { displayName: profileData.displayName || undefined };
+      if (newPhotoURL && !newPhotoURL.startsWith('data:')) {
+        authPayload.photoURL = newPhotoURL;
+      }
+      await updateAuthProfile(auth.currentUser, authPayload);
     } catch (authError) {
       console.warn('Could not update Firebase Auth profile:', authError);
     }
   }
 
-  return await updateUser(uid, {
+  // 4) Guaranteed Firestore merge write of the text fields + photoURL —
+  //    always executed regardless of upload outcome.
+  const savedUser = await updateUser(uid, {
     ...profileData,
     photoURL: newPhotoURL
   });
+
+  if (savedUser && photoUploadSkipped) {
+    savedUser._photoUploadSkipped = true;
+  }
+  return savedUser;
 }
 
 export function subscribeAllUsers(callback) {

@@ -103,6 +103,35 @@ export function subscribeClassroomMeetings(classroomId, callback) {
 }
 
 /**
+ * Subscribes to real-time meetings across multiple classrooms (global view)
+ */
+export function subscribeActiveMeetings(classroomIds, callback) {
+  const db = getFirestore();
+  if (!classroomIds || classroomIds.length === 0) {
+    callback([]);
+    return () => {};
+  }
+
+  const q = query(
+    collection(db, 'meetings'),
+    where('classroomId', 'in', classroomIds)
+  );
+
+  return onSnapshot(q, (snapshot) => {
+    const meetings = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    meetings.sort((a, b) => {
+      const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+      const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+      return bTime - aTime;
+    });
+    callback(meetings);
+  }, (err) => {
+    console.error('Error fetching active meetings:', err);
+    callback([]);
+  });
+}
+
+/**
  * Updates meeting status (e.g. start, end)
  */
 export async function updateMeetingStatus(meetingId, newStatus) {

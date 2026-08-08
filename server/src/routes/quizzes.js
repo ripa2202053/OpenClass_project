@@ -112,7 +112,7 @@ router.post('/:id/submit', verifyAuthToken, async (req, res) => {
     let score = 0;
     let totalMarks = 0;
 
-    const gradedQuestions = questions.map((q, i) => {
+    const graded = questions.map((q, i) => {
       const ans = answers ? answers[i] : null;
       const isCorrect = gradeQuestion(q, ans);
       const qMarks = Number(q.marks) || 1;
@@ -121,10 +121,13 @@ router.post('/:id/submit', verifyAuthToken, async (req, res) => {
 
       return {
         questionIndex: i,
-        givenAnswer: ans,
+        question: q.question,
+        type: q.type || 'mcq',
+        selectedAnswer: ans,
+        correctAnswer: q.type === 'shortanswer' ? q.correctAnswerText : q.correctAnswer,
         isCorrect,
-        marksEarned: isCorrect ? qMarks : 0,
-        correctAnswer: q.correctAnswer !== undefined ? q.correctAnswer : q.correctAnswerText
+        marks: isCorrect ? qMarks : 0,
+        maxMarks: qMarks,
       };
     });
 
@@ -137,13 +140,14 @@ router.post('/:id/submit', verifyAuthToken, async (req, res) => {
     const attemptData = {
       studentId: user.uid,
       studentName: user.name || user.displayName || user.email || 'Student',
+      answers: graded,
       score,
+      total: questions.length,
       totalMarks,
       percentage,
       timeTaken: Number(timeTaken) || 0,
-      answers: answers || [],
-      gradedQuestions,
       attemptNumber,
+      status: 'completed',
       submittedAt: FieldValue.serverTimestamp(),
     };
 
@@ -161,9 +165,10 @@ router.post('/:id/submit', verifyAuthToken, async (req, res) => {
     return res.json({
       message: 'Quiz submitted and auto-graded successfully',
       score,
+      total: questions.length,
       totalMarks,
       percentage,
-      gradedQuestions,
+      graded,
       attemptNumber
     });
   } catch (error) {

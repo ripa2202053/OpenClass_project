@@ -97,9 +97,10 @@ export async function submitQuizAttempt(classroomId, quizId, student, answers, t
     if (res && res.score !== undefined) {
       return {
         score: res.score,
+        total: res.total !== undefined ? res.total : res.totalMarks,
         totalMarks: res.totalMarks,
         percentage: res.percentage,
-        graded: res.gradedQuestions || [],
+        graded: res.graded || res.gradedQuestions || [],
         attemptNumber: res.attemptNumber || 1,
       };
     }

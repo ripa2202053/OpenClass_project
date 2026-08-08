@@ -9,6 +9,7 @@ import {
   subscribeReadReceipts
 } from './chatService.js';
 import { getAuth } from 'firebase/auth';
+import { sanitizeProfilePhotoUrl } from './userService.js';
 
 let currentUser = null;
 let activeTargetUser = null;
@@ -162,8 +163,20 @@ export async function openFloatingMessenger(targetUser) {
   if (icon) icon.textContent = 'remove';
   box.classList.remove('hidden', 'minimized');
 
-  avatarEl.src = targetUser.photoURL || targetUser.photo || 'https://via.placeholder.com/40';
+  avatarEl.src = sanitizeProfilePhotoUrl(targetUser.photoURL || targetUser.photo || '', targetUser) || 'https://via.placeholder.com/40';
   nameEl.textContent = targetUser.displayName || targetUser.name || 'User';
+  avatarEl.onerror = () => {
+    avatarEl.onerror = null;
+    const initials = nameEl.textContent.trim().split(/\s+/).map(w => w.charAt(0)).slice(0, 2).join('').toUpperCase() || 'U';
+    avatarEl.src =
+      'data:image/svg+xml;charset=utf-8,' +
+      encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">' +
+        '<rect width="100%" height="100%" fill="#3b82f6"/>' +
+        `<text x="50%" y="50%" dy=".35em" fill="#ffffff" font-family="Arial" font-size="16" ` +
+        `text-anchor="middle" font-weight="600">${initials}</text></svg>`
+      );
+  };
 
   const role = (targetUser.role || 'student').toLowerCase();
   roleEl.textContent = role === 'teacher' ? 'TEACHER' : 'STUDENT';
@@ -287,7 +300,7 @@ export function showChatToastAlert(senderInfo, messageText, onReplyClick) {
   const toast = document.createElement('div');
   toast.className = 'chat-toast';
 
-  const avatar = senderInfo.photoURL || senderInfo.photo || 'https://via.placeholder.com/40';
+  const avatar = sanitizeProfilePhotoUrl(senderInfo.photoURL || senderInfo.photo || '', senderInfo) || 'https://via.placeholder.com/40';
   const name = senderInfo.displayName || senderInfo.name || 'User';
 
   toast.innerHTML = `

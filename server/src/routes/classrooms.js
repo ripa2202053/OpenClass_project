@@ -91,7 +91,7 @@ router.get('/', verifyAuthToken, async (req, res) => {
     const classrooms = [];
     for (const doc of snapshot.docs) {
       const data = doc.data();
-      if (data.createdBy === uid) {
+      if (data.createdBy === uid || data.teacherId === uid) {
         classrooms.push({ id: doc.id, ...data });
       } else {
         const memberSnap = await db.collection('classrooms').doc(doc.id).collection('members').doc(uid).get();

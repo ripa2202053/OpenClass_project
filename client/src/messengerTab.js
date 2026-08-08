@@ -10,6 +10,7 @@ import {
   sendPrivateFileMessage,
   toggleMessageReaction
 } from './chatService.js';
+import { sanitizeProfilePhotoUrl } from './userService.js';
 import { subscribeAllUsers, displayRole } from './userService.js';
 import { subscribeToUserClassrooms } from './classroomService.js';
 import { getAuth } from 'firebase/auth';
@@ -314,7 +315,7 @@ function renderContactsList(filterText = '') {
 
     const displayNameClean = u.displayName || u.name || 'User';
     const fallbackAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(displayNameClean)}&background=3b82f6&color=fff&size=80`;
-    const photoUrl = u.photoURL || u.photo || fallbackAvatar;
+    const photoUrl = sanitizeProfilePhotoUrl(u.photoURL || u.photo || '', u) || fallbackAvatar;
     const roleStr = (u.role || 'student').toLowerCase();
     const roleBadgeText = roleStr === 'teacher' ? 'TEACHER' : 'STUDENT';
     const nameLabel = escapeHTML(displayNameClean) + (isSelf ? ' (You)' : '');
@@ -439,7 +440,7 @@ export async function selectContact(targetUser) {
   const fallbackAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(nameClean)}&background=3b82f6&color=fff&size=80`;
 
   if (headerAvatar) {
-    headerAvatar.src = targetUser.photoURL || targetUser.photo || fallbackAvatar;
+    headerAvatar.src = sanitizeProfilePhotoUrl(targetUser.photoURL || targetUser.photo || '', targetUser) || fallbackAvatar;
     headerAvatar.onerror = () => { headerAvatar.onerror = null; headerAvatar.src = fallbackAvatar; };
   }
   if (headerName) headerName.textContent = nameClean;
