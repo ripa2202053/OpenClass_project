@@ -17,9 +17,11 @@ import {
   collection,
   addDoc,
   query,
+  where,
   orderBy,
   limit,
   onSnapshot,
+  getDocs,
   setDoc,
   updateDoc,
   doc,
@@ -39,12 +41,12 @@ import {
 import { getPerformance } from 'firebase/performance';
 
 import { getFirebaseConfig } from './firebase-config.js';
-import { createUser, getUser, updateUser, updateProfile, isTeacher, isStudent, isApproved, isPending, requireRole, normalizeRole, isValidRole, displayRole, saveProfileToStorage, getProfileFromStorage, clearProfileFromStorage, ROLES, subscribeAllUsers, isLocalhost, getInitialsSvgDataUrl, sanitizeProfilePhotoUrl } from './userService.js';
+import { createUser, getUser, updateUser, updateProfile, isTeacher, isStudent, requireRole, normalizeRole, isValidRole, displayRole, saveProfileToStorage, getProfileFromStorage, clearProfileFromStorage, ROLES, subscribeAllUsers, isLocalhost, getInitialsSvgDataUrl, sanitizeProfilePhotoUrl } from './userService.js';
 import {
   createClassroom, joinClassroomByCode, validateJoinCode, subscribeToUserClassrooms,
   updateClassroom, archiveClassroom, deleteClassroomPermanent, leaveClassroom, getClassroom,
   approveMember, rejectMember, removeMember,
-  subscribeToClassroomMembers, subscribeToJoinRequests,
+  subscribeToClassroomMembers, subscribeToJoinRequests, subscribeToClassroomRequests,
   subscribeToClassroomStats, subscribeToClassroomActivity,
   addActivity as addClassroomActivity,
   getThemeGradient, CLASSROOM_THEMES
@@ -100,6 +102,7 @@ let globalAttendanceUnsubs = [];
 let studentHistoryUnsub = null;
 let remindersUnsub = null;
 let notificationsUnsub = null;
+let userStatusUnsub = null;
 let requestsUnsub = null;
 let teacherMeetingsUnsub = null;
 let detailStatsUnsub = null;
@@ -276,8 +279,26 @@ async function saveImageMessage(file) {
 }
 
 async function saveMessagingDeviceToken() {
+  // FCM getToken() 401s on localhost (no valid push key) and just pollutes the
+  // console — skip Push token registration entirely on local dev environments.
+  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    console.log('[FCM] Skipping Push Token registration on localhost environment.');
+    return;
+  }
   try {
-    const currentToken = await getToken(getMessaging());
+    // Register the Firebase Messaging service worker so getToken() has a working
+    // registration for background push messages.
+    let registration = null;
+    if ('serviceWorker' in navigator) {
+      try {
+        registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+      } catch (swErr) {
+        console.warn('FCM service worker registration failed:', swErr);
+      }
+    }
+    const tokenOptions = {};
+    if (registration) tokenOptions.serviceWorkerRegistration = registration;
+    const currentToken = await getToken(getMessaging(), tokenOptions);
     if (currentToken) {
       console.log('Got FCM device token:', currentToken);
       const tokenRef = doc(getFirestore(), 'fcmTokens', currentToken);
@@ -292,6 +313,13 @@ async function saveMessagingDeviceToken() {
       requestNotificationsPermissions();
     }
   } catch(error) {
+    const code = (error && (error.code || error.message || error.name || '')) || '';
+    // AbortError / permission-declined / service-worker failures are expected on
+    // localhost & strict browsers — warn instead of breaking app initialization.
+    if (/abort|permission-blocked|permission_denied|permission_default|serviceworker|messaging\/(permission|token|service-worker)/i.test(code)) {
+      console.warn('FCM token unavailable (expected on localhost):', error);
+      return;
+    }
     console.error('Unable to get messaging token.', error);
   };
 }
@@ -579,33 +607,15 @@ async function onProfileFormSubmit(e) {
 function applyRoleBasedUI(profile) {
   const isUserTeacher = isTeacher(profile);
   const isUserStudent = isStudent(profile);
-  const isPending = isUserStudent && profile.status === 'pending' && profile.requiresApproval === true;
-  const isRejected = isUserStudent && profile.status === 'rejected';
-  const isApproved = !isPending && !isRejected;
 
-  // Pending/rejected card
+  // Pending/rejected card is no longer used — students get immediate access.
+  // Account-level approval was removed; classroom access is gated per-course
+  // via join requests, not per-account.
   const pendingCard = document.getElementById('pending-status-card');
   const studentContent = document.getElementById('student-dashboard-content');
   if (pendingCard && studentContent) {
-    if (isPending || isRejected) {
-      pendingCard.style.display = 'block';
-      studentContent.style.display = 'none';
-      const icon = document.getElementById('pending-status-icon');
-      const title = document.getElementById('pending-status-title');
-      const msg = document.getElementById('pending-status-message');
-      if (isRejected) {
-        if (icon) icon.textContent = '❌';
-        if (title) title.textContent = 'Registration Rejected';
-        if (msg) msg.textContent = 'Your registration has been rejected. Please contact your teacher for more information.';
-      } else {
-        if (icon) icon.textContent = '⏳';
-        if (title) title.textContent = 'Account Pending Approval';
-        if (msg) msg.textContent = 'Your account is waiting for teacher approval. Please wait until your teacher approves your account.';
-      }
-    } else {
-      pendingCard.style.display = 'none';
-      studentContent.style.display = 'block';
-    }
+    pendingCard.style.display = 'none';
+    studentContent.style.display = 'block';
   }
 
   // Show/Hide Teacher-only navigation items in sidebar
@@ -776,7 +786,21 @@ async function authStateObserver(user) {
     
     populateProfileForm(currentUserProfile);
     applyRoleBasedUI(currentUserProfile);
-    
+
+    // Live-listen to this user's document so profile edits and role changes
+    // reflect instantly. Account-level approval was removed, so no pending/
+    // rejected modal is shown here.
+    if (userStatusUnsub) userStatusUnsub();
+    userStatusUnsub = onSnapshot(doc(getFirestore(), 'users', user.uid), (snap) => {
+      if (!snap.exists()) return;
+      const updated = { uid: user.uid, ...snap.data() };
+      currentUserProfile = updated;
+      window.currentUserProfile = updated;
+      saveProfileToStorage(updated);
+      populateProfileForm(updated);
+      applyRoleBasedUI(updated);
+    });
+
     if (classroomsUnsubscribe) classroomsUnsubscribe();
     classroomsUnsubscribe = subscribeToUserClassrooms(user.uid, currentUserProfile?.role || '', renderClassrooms);
     
@@ -822,15 +846,10 @@ async function authStateObserver(user) {
         }
       });
 
-      const notifBadge = document.getElementById('notif-badge');
-      if (notifBadge) {
-        if (totalUnread > 0) {
-          notifBadge.textContent = totalUnread > 99 ? '99+' : String(totalUnread);
-          notifBadge.style.display = 'inline-block';
-        } else {
-          notifBadge.style.display = 'none';
-        }
-      }
+      // NOTE: Private-chat unread counts intentionally do NOT touch the
+      // notification bell badge (#notif-badge) — that badge must reflect ONLY
+      // the `notifications` collection so it stays in sync with the dropdown
+      // list. Chat unread is surfaced via the toast alerts above.
     });
   } else {
     // Close any open first-login role modal
@@ -852,6 +871,7 @@ async function authStateObserver(user) {
     signInButtonElement.style.display = '';
     if (classroomsUnsubscribe) { classroomsUnsubscribe(); classroomsUnsubscribe = null; }
     if (dashboardUnsubscribe) { dashboardUnsubscribe(); dashboardUnsubscribe = null; }
+    if (userStatusUnsub) { userStatusUnsub(); userStatusUnsub = null; }
     if (chatChannelsUnsubscribe) { chatChannelsUnsubscribe(); chatChannelsUnsubscribe = null; }
     if (chatMessagesUnsubscribe) { chatMessagesUnsubscribe(); chatMessagesUnsubscribe = null; }
     if (chatTypingUnsubscribe) { chatTypingUnsubscribe(); chatTypingUnsubscribe = null; }
@@ -1117,19 +1137,47 @@ async function handleEmailRegister(e) {
       // Ensure the Firestore user document exists with the selected role
       await createUser(cred.user, normalizedRole, extraData);
       
-      // For students, create join request document
+      // For students, create the classroom join request document
       if (normalizedRole === ROLES.STUDENT && classroomInfo) {
         const db = getFirestore();
-        await setDoc(doc(db, 'joinRequests', cred.user.uid), {
-          studentId: cred.user.uid,
-          teacherId: classroomInfo.teacherId,
-          classroomId: classroomInfo.classroomId,
-          classroomCode: classroomInfo.classroomCode,
-          status: 'pending',
-          createdAt: serverTimestamp(),
+        const requestId = `${classroomInfo.classroomId}_${cred.user.uid}`;
+        const requestDoc = {
+          requestId,
+          studentUid: cred.user.uid,
+          uid: cred.user.uid,
+          displayName: name,
           studentName: name,
+          email,
           studentEmail: email,
+          studentId: extraData.studentId || '',
+          department: extraData.department || '',
+          photoURL: '',
+          role: ROLES.STUDENT,
+          classId: classroomInfo.classroomId,
+          className: classroomInfo.classroomName || '',
+          classroomId: classroomInfo.classroomId,
+          classroomName: classroomInfo.classroomName || '',
+          classroomCode: classroomInfo.classroomCode || '',
+          teacherUid: classroomInfo.teacherId || '',
+          teacherId: classroomInfo.teacherId || '',
+          status: 'pending',
+          requestedAt: serverTimestamp(),
+          createdAt: serverTimestamp(),
+        };
+        await setDoc(doc(db, 'classroomRequests', requestId), requestDoc);
+        await setDoc(doc(db, 'classrooms', classroomInfo.classroomId, 'joinRequests', cred.user.uid), {
+          uid: cred.user.uid,
+          displayName: name,
+          email,
+          studentId: extraData.studentId || '',
+          photoURL: '',
+          role: ROLES.STUDENT,
+          requestedAt: serverTimestamp(),
+          status: 'pending',
         });
+        if (classroomInfo.teacherId) {
+          createNotification(classroomInfo.teacherId, 'join_request', 'New Join Request', `${name} requested to join ${classroomInfo.classroomName || 'your classroom'}`).catch(() => {});
+        }
       }
     }
   } catch (err) {
@@ -1964,6 +2012,7 @@ var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
     const teacherName = c.teacherName || 'Teacher';
     const teacherInitials = teacherName.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
     const teacherPhoto = sanitizeProfilePhotoUrl(c.teacherPhotoURL || (isCreator && currentUserProfile?.photoURL) || '', c);
+    const cardSubtitle = c.courseCode || c.section || c.subject || '';
 
     const bgStyle = c.coverImageUrl
       ? `background-image: url('${c.coverImageUrl}'); background-size: cover; background-position: center;`
@@ -1975,7 +2024,7 @@ var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
         <div class="gc-card-banner-header">
           <div class="gc-card-title-group">
             <h3 class="gc-card-title" title="${c.classroomName}">${c.classroomName}</h3>
-            ${c.section ? `<p class="gc-card-subtitle">${c.section}</p>` : (c.subject ? `<p class="gc-card-subtitle">${c.subject}</p>` : '')}
+            ${cardSubtitle ? `<p class="gc-card-subtitle">${cardSubtitle}</p>` : ''}
           </div>
           ${isPending ? '' : `
           <div class="gc-card-actions">
@@ -2188,6 +2237,12 @@ const formJoinClass = document.getElementById('form-join-classroom');
 function openModalById(id) {
   const el = document.getElementById(id);
   if (el) el.style.display = 'flex';
+  if (id === 'modal-create-classroom') {
+    const teacherNameEl = document.getElementById('create-classroom-teacher-name');
+    if (teacherNameEl && !teacherNameEl.value) {
+      teacherNameEl.value = (currentUserProfile?.displayName || getUserName() || '').trim();
+    }
+  }
 }
 
 function closeCreateMenu() {
@@ -2261,10 +2316,9 @@ if (formCreateClass) {
     try {
       const classroom = await createClassroom({
         classroomName: document.getElementById('create-classroom-name').value,
-        section: document.getElementById('create-classroom-section').value,
-        subject: document.getElementById('create-classroom-subject').value,
-        room: document.getElementById('create-classroom-room').value,
-        themeColor: document.getElementById('create-classroom-theme')?.value || 'blue',
+        courseCode: document.getElementById('create-classroom-course-code').value,
+        teacherName: document.getElementById('create-classroom-teacher-name').value || activeProfile.displayName || '',
+        themeColor: document.getElementById('create-classroom-theme')?.value || '#3B82F6',
       }, activeProfile);
       formCreateClass.reset();
       document.getElementById('modal-create-classroom').style.display = 'none';
@@ -2309,8 +2363,8 @@ function showClassroomCreatedModal(classroom) {
   
   // Populate modal with classroom details
   document.getElementById('success-classroom-name').textContent = classroom.classroomName || 'Classroom';
-  document.getElementById('success-subject').textContent = classroom.subject || 'General';
-  document.getElementById('success-section').textContent = classroom.section || '-';
+  document.getElementById('success-course-code').textContent = classroom.courseCode || classroom.classroomCode || 'N/A';
+  document.getElementById('success-teacher-name').textContent = classroom.teacherName || '-';
   document.getElementById('success-join-code').textContent = classroom.classroomCode || 'N/A';
   
   // Show modal
@@ -2343,7 +2397,7 @@ document.getElementById('btn-copy-join-code')?.addEventListener('click', async (
 // Share Join Code button handler
 document.getElementById('btn-share-join-code')?.addEventListener('click', async () => {
   if (!currentCreatedClassroom) return;
-  const shareText = `Classroom: ${currentCreatedClassroom.classroomName}\nSubject: ${currentCreatedClassroom.subject || 'General'}\nJoin Code: ${currentCreatedClassroom.classroomCode}`;
+  const shareText = `Classroom: ${currentCreatedClassroom.classroomName}\nCourse Code: ${currentCreatedClassroom.courseCode || currentCreatedClassroom.classroomCode || 'General'}\nJoin Code: ${currentCreatedClassroom.classroomCode}`;
   
   if (navigator.share && navigator.canShare && navigator.canShare({ text: shareText })) {
     try {
@@ -2403,7 +2457,7 @@ if (formJoinClass) {
       formJoinClass.reset();
       document.getElementById('modal-join-classroom').style.display = 'none';
       if (result && result.joinStatus === 'pending') {
-        showAppToast('Request Sent! Waiting for teacher\u2019s approval.', 'info');
+        showAppToast('Join request submitted! Waiting for teacher approval.', 'info');
       } else {
         showAppToast('Successfully joined the classroom.', 'success');
       }
@@ -2423,11 +2477,14 @@ if (formJoinClass) {
 function openEditModal(classroom) {
   document.getElementById('edit-classroom-id').value = classroom.classroomId;
   document.getElementById('edit-classroom-name').value = classroom.classroomName || '';
-  document.getElementById('edit-classroom-section').value = classroom.section || '';
-  document.getElementById('edit-classroom-subject').value = classroom.subject || '';
-  document.getElementById('edit-classroom-room').value = classroom.room || '';
+  document.getElementById('edit-classroom-course-code').value = classroom.courseCode || '';
+  document.getElementById('edit-classroom-teacher-name').value = classroom.teacherName || '';
   if (document.getElementById('edit-classroom-theme')) {
-    document.getElementById('edit-classroom-theme').value = classroom.themeColor || 'blue';
+    const tc = classroom.themeColor || '#3B82F6';
+    const legacyMap = { blue: '#3B82F6', purple: '#A855F7', teal: '#10B981', amber: '#FF6B00', indigo: '#6366F1' };
+    const val = legacyMap[tc] || tc;
+    const themeSelect = document.getElementById('edit-classroom-theme');
+    themeSelect.value = themeSelect.querySelector(`option[value="${val}"]`) ? val : '#3B82F6';
   }
   if (document.getElementById('edit-classroom-desc')) {
     document.getElementById('edit-classroom-desc').value = classroom.description || '';
@@ -2447,10 +2504,9 @@ if (formEditClass) {
     try {
       await updateClassroom(classroomId, {
         classroomName: document.getElementById('edit-classroom-name').value,
-        section: document.getElementById('edit-classroom-section').value,
-        subject: document.getElementById('edit-classroom-subject').value,
-        room: document.getElementById('edit-classroom-room').value,
-        themeColor: document.getElementById('edit-classroom-theme')?.value || 'blue',
+        courseCode: document.getElementById('edit-classroom-course-code').value,
+        teacherName: document.getElementById('edit-classroom-teacher-name').value,
+        themeColor: document.getElementById('edit-classroom-theme')?.value || '#3B82F6',
         description: document.getElementById('edit-classroom-desc')?.value || '',
       }, currentUserProfile);
       formEditClass.reset();
@@ -2492,7 +2548,7 @@ function openClassroomDetail(classroom) {
   const nameEl = document.getElementById('detail-classroom-name');
   if (nameEl) nameEl.textContent = classroom.classroomName || 'Classroom Detail';
   const subEl = document.getElementById('detail-classroom-subtitle');
-  if (subEl) subEl.textContent = classroom.section || classroom.subject || '';
+  if (subEl) subEl.textContent = classroom.courseCode || classroom.section || classroom.subject || '';
   
   const codeValEl = document.getElementById('detail-code-val');
   if (codeValEl) codeValEl.textContent = classroom.classroomCode || 'N/A';
@@ -2503,7 +2559,7 @@ function openClassroomDetail(classroom) {
   const heroTitle = document.getElementById('detail-hero-title');
   if (heroTitle) heroTitle.textContent = classroom.classroomName || 'Classroom';
   const heroSub = document.getElementById('detail-hero-subtitle');
-  if (heroSub) heroSub.textContent = classroom.section || classroom.subject || '';
+  if (heroSub) heroSub.textContent = classroom.courseCode || classroom.section || classroom.subject || '';
   
   const heroBanner = document.getElementById('detail-hero-banner');
   if (heroBanner) {
@@ -2602,7 +2658,7 @@ function openClassroomDetail(classroom) {
   const infoName = document.getElementById('detail-info-name');
   if (infoName) infoName.textContent = classroom.classroomName || '';
   const infoSubject = document.getElementById('detail-info-subject');
-  if (infoSubject) infoSubject.textContent = classroom.subject || 'General';
+  if (infoSubject) infoSubject.textContent = classroom.courseCode || classroom.subject || 'General';
   const infoCode = document.getElementById('detail-info-code');
   if (infoCode) infoCode.textContent = classroom.classroomCode || 'N/A';
   const infoTeacher = document.getElementById('detail-info-teacher');
@@ -2672,7 +2728,7 @@ function openClassroomDetail(classroom) {
         `OPENCLASS COURSE SYLLABUS\n` +
         `=========================================\n\n` +
         `Course: ${classroom.classroomName}\n` +
-        `Subject: ${classroom.subject || 'General'}\n` +
+        `Course Code: ${classroom.courseCode || classroom.subject || 'General'}\n` +
         `Instructor: ${teacherName}\n` +
         `Office Hours: ${classroom.officeHours || 'Sun & Tue 2:00 - 4:00 PM'}\n` +
         `Schedule: ${classroom.routine || 'Mon & Wed 10:00 AM - 11:30 AM'}\n\n` +
@@ -5354,33 +5410,48 @@ function initCalendar(uid) {
 
 // ═══════════════════════════ NOTIFICATIONS ═══════════════════════
 
+function parseNotifTime(n) {
+  const t = n?.createdAt;
+  if (!t) return null;
+  if (typeof t.toDate === 'function') return t.toDate();
+  if (typeof t === 'string' || typeof t === 'number') return new Date(t);
+  return null;
+}
+
 function renderNotificationItem(notif, compact = false) {
   const div = document.createElement('div');
-  div.className = `notif-item ${notif.read ? 'notif-item--read' : ''}`;
-  const icons = { assignment: 'assignment', quiz: 'quiz', meeting: 'videocam', announcement: 'campaign', chat: 'forum', attendance: 'fact_check', system: 'info' };
+  const isRead = notif.isRead === undefined ? !!notif.read : !!notif.isRead;
+  div.className = `notif-item ${isRead ? 'notif-item--read' : ''}`;
+  const icons = { assignment: 'assignment', quiz: 'quiz', meeting: 'videocam', announcement: 'campaign', chat: 'forum', attendance: 'fact_check', system: 'info', join_request: 'person_add' };
   const icon = icons[notif.type] || 'notifications';
-  const time = notif.createdAt?.toDate ? notif.createdAt.toDate().toLocaleString() : '';
+  const time = parseNotifTime(notif);
+  const timeStr = time ? time.toLocaleString() : '';
+  const body = notif.message || notif.body || '';
   div.innerHTML = `
     <div class="notif-icon"><i class="material-icons" style="font-size:20px;">${icon}</i></div>
     <div class="notif-content">
       <div class="notif-title">${notif.title}</div>
-      <div class="notif-body">${notif.body || ''}</div>
-      <div class="notif-time">${time}</div>
+      <div class="notif-body">${body}</div>
+      <div class="notif-time">${timeStr}</div>
     </div>
-    ${!compact ? `<div class="notif-actions">${!notif.read ? `<button class="notif-mark-read icon-btn" data-id="${notif.id}" style="font-size:16px;"><i class="material-icons">mark_email_read</i></button>` : ''}<button class="notif-delete icon-btn" data-id="${notif.id}" style="font-size:16px;color:var(--text-muted);"><i class="material-icons">delete</i></button></div>` : ''}`;
+    ${!compact ? `<div class="notif-actions">${!isRead ? `<button class="notif-mark-read icon-btn" data-id="${notif.id}" style="font-size:16px;"><i class="material-icons">mark_email_read</i></button>` : ''}<button class="notif-delete icon-btn" data-id="${notif.id}" style="font-size:16px;color:var(--text-muted);"><i class="material-icons">delete</i></button></div>` : ''}`;
   return div;
 }
 
 function renderNotificationDropdown(notifications) {
   const list = document.getElementById('notif-dropdown-list');
   if (!list) return;
-  const unread = notifications.filter(n => !n.read);
+  const isUnread = (n) => n.isRead === undefined ? !n.read : !n.isRead;
+  const unread = notifications.filter(isUnread);
   const badge = document.getElementById('notif-badge');
   if (badge) {
     if (unread.length > 0) {
       badge.textContent = unread.length > 99 ? '99+' : unread.length;
       badge.style.display = '';
     } else {
+      // Force-clear: if nothing in the notifications collection is unread for
+      // this user, the badge MUST show nothing (removes any stale red '1').
+      badge.textContent = '0';
       badge.style.display = 'none';
     }
   }
@@ -5390,15 +5461,17 @@ function renderNotificationDropdown(notifications) {
     return;
   }
   list.innerHTML = '';
-  notifications.slice(0, 10).forEach(n => {
-    const el = renderNotificationItem(n, true);
-    el.addEventListener('click', async () => {
-      if (!n.read) {
+  [...notifications]
+    .sort((a, b) => ((parseNotifTime(b) || 0) - (parseNotifTime(a) || 0)))
+    .slice(0, 10)
+    .forEach(n => {
+      const el = renderNotificationItem(n, true);
+      el.addEventListener('click', async () => {
+        if (!isUnread(n)) return;
         try { await markAsRead(n.id); } catch (e) { /* ignore */ }
-      }
+      });
+      list.appendChild(el);
     });
-    list.appendChild(el);
-  });
 }
 
 function renderNotificationFullList(notifications) {
@@ -5409,9 +5482,11 @@ function renderNotificationFullList(notifications) {
     return;
   }
   container.innerHTML = '';
-  notifications.forEach(n => {
-    const el = renderNotificationItem(n, false);
-    container.appendChild(el);
+  [...notifications]
+    .sort((a, b) => ((parseNotifTime(b) || 0) - (parseNotifTime(a) || 0)))
+    .forEach(n => {
+      const el = renderNotificationItem(n, false);
+      container.appendChild(el);
 
     const markBtn = el.querySelector('.notif-mark-read');
     if (markBtn) markBtn.addEventListener('click', async (e) => {
@@ -5772,41 +5847,76 @@ document.getElementById('btn-analytics-export-pdf')?.addEventListener('click', (
 requestsUnsub = null;
 let requestsFilter = 'pending';
 
+function matchesApprovalFilter(r, filter) {
+  const status = r.status || 'pending';
+  if (filter === 'pending') return status === 'pending';
+  if (filter === 'rejected') return status === 'rejected';
+  if (filter === 'approved') return status === 'approved';
+  return true;
+}
+
+function parseReqTime(r) {
+  if (!r) return null;
+  const t = r.createdAt || r.requestedAt;
+  if (!t) return null;
+  if (typeof t.toDate === 'function') return t.toDate();
+  if (typeof t.toMillis === 'function') return new Date(t.toMillis());
+  if (typeof t === 'string' || typeof t === 'number') return new Date(t);
+  return null;
+}
+
 function renderStudentRequests(requests) {
   const container = document.getElementById('approvals-list');
   if (!container) return;
-  const filtered = requestsFilter === 'all' ? requests : requests.filter(r => r.status === requestsFilter);
+  const filtered = requests
+    .filter(r => matchesApprovalFilter(r, requestsFilter))
+    .sort((a, b) => ((parseReqTime(b) || 0) - (parseReqTime(a) || 0)));
   if (filtered.length === 0) {
-    container.innerHTML = `<div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">No ${requestsFilter} requests found.</div>`;
+    const msg = requestsFilter === 'pending'
+      ? 'No pending join requests found'
+      : requestsFilter === 'all'
+        ? 'No classroom join requests found'
+        : `No ${requestsFilter} join requests found`;
+    container.innerHTML = `<div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">${msg}.</div>`;
     return;
   }
   container.innerHTML = '';
   filtered.forEach(r => {
+    const dispStatus = r.status || 'pending';
     const card = document.createElement('div');
     card.className = 'approval-card';
-    const createdDate = r.createdAt?.toDate ? r.createdAt.toDate().toLocaleDateString() : '—';
-    const statusClass = r.status === 'approved' ? 'bg-success-dim' : r.status === 'rejected' ? 'bg-archived-dim' : 'bg-warning-dim';
-    const initials = (r.studentName || r.studentEmail || '?').charAt(0).toUpperCase();
+    const reqTime = parseReqTime(r);
+    const requestedDateStr = reqTime ? reqTime.toLocaleDateString() : '—';
+    const statusClass = dispStatus === 'approved' ? 'bg-success-dim' : dispStatus === 'rejected' ? 'bg-archived-dim' : 'bg-warning-dim';
+    const reqName = r.displayName || r.studentName || 'Unknown';
+    const reqEmail = r.email || r.studentEmail || 'No email';
+    const reqClass = r.className || r.classroomName || '';
+    const reqClassId = r.classId || r.classroomId || '';
+    const initials = (reqName || reqEmail || '?').charAt(0).toUpperCase();
     const requestPhoto = sanitizeProfilePhotoUrl(r.photoURL || '', r);
+    const studentUid = String(r.studentUid || r.uid || '');
+    const idLine = r.studentId && r.studentId !== studentUid ? r.studentId : '';
     card.innerHTML = `
       <div class="approval-card-left">
         <div class="approval-avatar">${requestPhoto ? `<img src="${requestPhoto}" />` : `<span>${initials}</span>`}</div>
         <div class="approval-info">
-          <div class="approval-name">${r.studentName || 'Unknown'}</div>
+          <div class="approval-name">${reqName}</div>
           <div class="approval-meta">
-            <span>${r.studentEmail || 'No email'}</span>
-            <span>Classroom: ${r.classroomName || 'Unknown'}</span>
-            <span>Code: ${r.classroomCode || 'N/A'}</span>
-            <span>Requested: ${createdDate}</span>
+            <span>${reqEmail}</span>
+            ${reqClass ? `<span>Requesting to join: ${reqClass}</span>` : ''}
+            ${r.classroomCode ? `<span>Code: ${r.classroomCode}</span>` : ''}
+            ${idLine ? `<span>Student ID: ${idLine}</span>` : ''}
+            ${r.department ? `<span>Department: ${r.department}</span>` : ''}
+            <span>Requested: ${requestedDateStr}</span>
           </div>
         </div>
       </div>
       <div class="approval-card-right">
-        <span class="badge-status ${statusClass}" style="text-transform:capitalize;">${r.status}</span>
-        <button class="icon-btn request-view-btn" data-student-id="${r.studentId}" title="View Profile"><i class="material-icons">visibility</i></button>
-        ${r.status === 'pending' ? `
-          <button class="icon-btn request-approve-btn" data-student-id="${r.studentId}" data-classroom-id="${r.classroomId}" style="color:var(--success);" title="Approve"><i class="material-icons">check_circle</i></button>
-          <button class="icon-btn request-reject-btn" data-student-id="${r.studentId}" data-classroom-id="${r.classroomId}" style="color:var(--danger);" title="Reject"><i class="material-icons">cancel</i></button>
+        <span class="badge-status ${statusClass}" style="text-transform:capitalize;">${dispStatus}</span>
+        ${studentUid ? `<button class="icon-btn request-view-btn" data-student-id="${studentUid}" title="View Request"><i class="material-icons">visibility</i></button>` : ''}
+        ${dispStatus === 'pending' ? `
+          <button class="icon-btn request-approve-btn" data-student-id="${studentUid}" data-classroom-id="${reqClassId}" style="color:var(--success);" title="Approve"><i class="material-icons">check_circle</i></button>
+          <button class="icon-btn request-reject-btn" data-student-id="${studentUid}" data-classroom-id="${reqClassId}" style="color:var(--danger);" title="Reject"><i class="material-icons">cancel</i></button>
         ` : ''}
       </div>`;
     container.appendChild(card);
@@ -5817,174 +5927,170 @@ function renderStudentRequests(requests) {
     btn.addEventListener('click', async () => {
       const studentId = btn.dataset.studentId;
       const classroomId = btn.dataset.classroomId;
-      if (!confirm('Approve this student? They will be added to your classroom.')) return;
+      if (!studentId || !classroomId) return;
+      if (!confirm('Approve this join request?')) return;
       try {
-        const db = getFirestore();
-        
-        // Update join request status
-        await updateDoc(doc(db, 'joinRequests', studentId), { status: 'approved' });
-        
-        // Update student status
-        await updateDoc(doc(db, 'users', studentId), { status: 'approved' });
-        
-        // Add student to classroom members
-        const requestSnap = await getDoc(doc(db, 'joinRequests', studentId));
-        const requestData = requestSnap.data();
-        await setDoc(doc(db, 'classrooms', classroomId, 'members', studentId), {
-          uid: studentId,
-          displayName: requestData.studentName,
-          email: requestData.studentEmail,
-          photoURL: requestData.photoURL || '',
-          role: ROLES.STUDENT,
-          joinedAt: serverTimestamp(),
-          approved: true,
-          approvedBy: currentUserProfile.uid,
-          approvedAt: serverTimestamp(),
-        });
-        
-        // Update classroom member count
-        const classroomRef = doc(db, 'classrooms', classroomId);
-        const classroomSnap = await getDoc(classroomRef);
-        const currentCount = classroomSnap.data().memberCount || 0;
-        await updateDoc(classroomRef, { memberCount: currentCount + 1, updatedAt: serverTimestamp() });
-        
-        alert('Student approved and added to classroom successfully!');
+        await approveMember(classroomId, studentId, currentUserProfile);
+        showAppToast('Join request approved successfully!');
       } catch (err) {
+        console.error('Approval failed:', err);
         alert(err.message);
       }
     });
   });
-  
+
   container.querySelectorAll('.request-reject-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const studentId = btn.dataset.studentId;
       const classroomId = btn.dataset.classroomId;
-      if (!confirm('Reject this student? They will not be able to join your classroom.')) return;
+      if (!studentId || !classroomId) return;
+      if (!confirm('Reject this join request?')) return;
       try {
-        const db = getFirestore();
-        
-        // Update join request status
-        await updateDoc(doc(db, 'joinRequests', studentId), { status: 'rejected' });
-        
-        // Update student status
-        await updateDoc(doc(db, 'users', studentId), { status: 'rejected' });
-        
-        alert('Student rejected successfully!');
+        await rejectMember(classroomId, studentId, currentUserProfile);
+        showAppToast('Join request rejected.');
       } catch (err) {
+        console.error('Reject failed:', err);
         alert(err.message);
       }
     });
   });
-  
+
   container.querySelectorAll('.request-view-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const studentId = btn.dataset.studentId;
+      if (!studentId) return;
+      const req = requests.find(r => String(r.studentUid || r.uid || '') === String(studentId));
+      if (!req) return;
       try {
-        const studentSnap = await getDoc(doc(getFirestore(), 'users', studentId));
-        if (studentSnap.exists()) {
-          const student = studentSnap.data();
-          const createdDate = student.createdAt?.toDate ? student.createdAt.toDate().toLocaleString() : '—';
-          const statusClass = student.status === 'approved' ? 'bg-success-dim' : student.status === 'rejected' ? 'bg-archived-dim' : 'bg-warning-dim';
-          const initials = (student.displayName || student.email || '?').charAt(0).toUpperCase();
-          const studentPhoto = sanitizeProfilePhotoUrl(student.photoURL || '', student);
-          const body = document.getElementById('student-profile-body');
-          const footer = document.getElementById('student-profile-footer');
-          body.innerHTML = `
+        const name = req.displayName || req.studentName || 'Unknown';
+        const email = req.email || req.studentEmail || '—';
+        const photo = sanitizeProfilePhotoUrl(req.photoURL || '', req);
+        const reqClassId = req.classId || req.classroomId || '';
+        const reqClass = req.className || req.classroomName || '—';
+        const initials = name.charAt(0).toUpperCase();
+        const statusClass = (req.status || 'pending') === 'approved' ? 'bg-success-dim' : (req.status || '') === 'rejected' ? 'bg-archived-dim' : 'bg-warning-dim';
+        const requestedDate = parseReqTime(req);
+        const requestedDateStr = requestedDate ? requestedDate.toLocaleString() : '—';
+        const body = document.getElementById('student-profile-body');
+        const footer = document.getElementById('student-profile-footer');
+        body.innerHTML = `
             <div style="text-align:center;margin-bottom:24px;">
-              ${studentPhoto ? `<img src="${studentPhoto}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;" />` : `<div style="width:80px;height:80px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:32px;font-weight:600;margin:0 auto;">${initials}</div>`}
-              <h3 style="margin-top:12px;">${student.displayName || 'Unknown'}</h3>
-              <span class="badge-status ${statusClass}" style="text-transform:capitalize;">${student.status || 'pending'}</span>
+              ${photo ? `<img src="${photo}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;" />` : `<div style="width:80px;height:80px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:32px;font-weight:600;margin:0 auto;">${initials}</div>`}
+              <h3 style="margin-top:12px;">${name}</h3>
+              <span class="badge-status ${statusClass}" style="text-transform:capitalize;">${req.status || 'pending'}</span>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-              <div class="form-group"><label>Email</label><div style="color:var(--text-main);">${student.email || '—'}</div></div>
-              <div class="form-group"><label>Role</label><div style="color:var(--text-main);">${student.role || '—'}</div></div>
-              <div class="form-group"><label>Student ID</label><div style="color:var(--text-main);">${student.studentId || '—'}</div></div>
-              <div class="form-group"><label>Department</label><div style="color:var(--text-main);">${student.department || '—'}</div></div>
-              <div class="form-group"><label>Semester</label><div style="color:var(--text-main);">${student.semester || '—'}</div></div>
-              <div class="form-group"><label>Registered</label><div style="color:var(--text-main);">${createdDate}</div></div>
+              <div class="form-group"><label>Email</label><div style="color:var(--text-main);">${email}</div></div>
+              <div class="form-group"><label>Role</label><div style="color:var(--text-main);">Student</div></div>
+              <div class="form-group"><label>Student ID</label><div style="color:var(--text-main);">${req.studentId || '—'}</div></div>
+              <div class="form-group"><label>Department</label><div style="color:var(--text-main);">${req.department || '—'}</div></div>
+              <div class="form-group"><label>Classroom</label><div style="color:var(--text-main);">${reqClass}</div></div>
+              <div class="form-group"><label>Requested</label><div style="color:var(--text-main);">${requestedDateStr}</div></div>
             </div>`;
-          footer.innerHTML = student.status === 'pending' ? `
-            <button class="btn btn-success" id="profile-approve-btn" data-student-id="${studentId}"><i class="material-icons">check_circle</i> Approve</button>
-            <button class="btn btn-outline" style="color:var(--danger);" id="profile-reject-btn" data-student-id="${studentId}"><i class="material-icons">cancel</i> Reject</button>
+        footer.innerHTML = (req.status || 'pending') === 'pending' ? `
+            <button class="btn btn-success" id="profile-approve-btn" data-student-id="${studentId}" data-classroom-id="${reqClassId}"><i class="material-icons">check_circle</i> Approve</button>
+            <button class="btn btn-outline" style="color:var(--danger);" id="profile-reject-btn" data-student-id="${studentId}" data-classroom-id="${reqClassId}"><i class="material-icons">cancel</i> Reject</button>
             <button type="button" class="btn btn-outline" data-close="modal-student-profile">Close</button>
           ` : `<button type="button" class="btn btn-outline" data-close="modal-student-profile">Close</button>`;
-          document.getElementById('modal-student-profile').style.display = 'flex';
-          document.getElementById('profile-approve-btn')?.addEventListener('click', async (e) => {
-            const req = requests.find(r => r.studentId === e.currentTarget.dataset.studentId);
-            if (req) {
-              try {
-                const db = getFirestore();
-                await updateDoc(doc(db, 'joinRequests', studentId), { status: 'approved' });
-                await updateDoc(doc(db, 'users', studentId), { status: 'approved' });
-                const requestData = req;
-                await setDoc(doc(db, 'classrooms', req.classroomId, 'members', studentId), {
-                  uid: studentId,
-                  displayName: requestData.studentName,
-                  email: requestData.studentEmail,
-                  photoURL: requestData.photoURL || '',
-                  role: ROLES.STUDENT,
-                  joinedAt: serverTimestamp(),
-                  approved: true,
-                  approvedBy: currentUserProfile.uid,
-                  approvedAt: serverTimestamp(),
-                });
-                const classroomRef = doc(db, 'classrooms', req.classroomId);
-                const classroomSnap = await getDoc(classroomRef);
-                const currentCount = classroomSnap.data().memberCount || 0;
-                await updateDoc(classroomRef, { memberCount: currentCount + 1, updatedAt: serverTimestamp() });
-                document.getElementById('modal-student-profile').style.display = 'none';
-              } catch (err) { alert(err.message); }
-            }
-          });
-          document.getElementById('profile-reject-btn')?.addEventListener('click', async (e) => {
-            if (!confirm('Reject this student?')) return;
-            try {
-              const db = getFirestore();
-              await updateDoc(doc(db, 'joinRequests', studentId), { status: 'rejected' });
-              await updateDoc(doc(db, 'users', studentId), { status: 'rejected' });
-              document.getElementById('modal-student-profile').style.display = 'none';
-            } catch (err) { alert(err.message); }
-          });
-        }
+        document.getElementById('modal-student-profile').style.display = 'flex';
+        document.getElementById('profile-approve-btn')?.addEventListener('click', async (e) => {
+          try {
+            await approveMember(reqClassId, studentId, currentUserProfile);
+            document.getElementById('modal-student-profile').style.display = 'none';
+            showAppToast('Join request approved successfully!');
+          } catch (err) { console.error('Approval failed:', err); alert(err.message); }
+        });
+        document.getElementById('profile-reject-btn')?.addEventListener('click', async () => {
+          if (!confirm('Reject this join request?')) return;
+          try {
+            await rejectMember(reqClassId, studentId, currentUserProfile);
+            document.getElementById('modal-student-profile').style.display = 'none';
+            showAppToast('Join request rejected.');
+          } catch (err) { console.error('Reject failed:', err); alert(err.message); }
+        });
       } catch (err) {
-        alert('Could not load student profile.');
+        console.error('Could not load join request details:', err);
+        alert('Could not load join request details.');
       }
     });
   });
 }
 
+function getOwnedClassroomIds(teacherUid) {
+  // Teachers only fetch/subscribe to classrooms they manage/teach, so every
+  // classroom in userClassrooms is treated as an owned classroom by default.
+  const ownedClassroomIds = new Set((userClassrooms || [])
+    .map(c => c.classroomId || c.id || c._id)
+    .filter(Boolean));
+  console.log('[DEBUG] Teacher Owned Classroom IDs:', [...ownedClassroomIds]);
+  return ownedClassroomIds;
+}
+
+function filterTeacherRequests(requests, teacherUid) {
+  const ownedClassroomIds = getOwnedClassroomIds(teacherUid);
+  const matched = requests.filter(r => {
+    const classId = r.classId || r.classroomId;
+    // Direct ownership fallback: the request explicitly names this teacher.
+    const directMatch = r.teacherUid === teacherUid || r.ownerId === teacherUid;
+    if (ownedClassroomIds.size > 0 && classId) {
+      return ownedClassroomIds.has(classId) || directMatch;
+    }
+    // No owned classrooms known yet (userClassrooms not loaded) — fall back to
+    // direct ownership fields plus a lenient match so nothing is hidden.
+    return directMatch || !r.teacherUid;
+  });
+  console.log('[DEBUG] Total classroomRequests in snapshot:', requests.length, 'Matched for Teacher:', matched.length);
+  return matched;
+}
+
 function loadStudentRequests() {
   if (requestsUnsub) requestsUnsub();
   const container = document.getElementById('approvals-list');
-  if (container) container.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">Loading...</div>';
-  
-  const db = getFirestore();
-  const teacherId = currentUserProfile?.uid;
-  if (!teacherId) return;
-  
-  requestsUnsub = onSnapshot(
-    query(collection(db, 'joinRequests'), where('teacherId', '==', teacherId), orderBy('createdAt', 'desc')),
-    async (snapshot) => {
-      const requests = [];
-      for (const docSnap of snapshot.docs) {
-        const data = docSnap.data();
-        // Get classroom name
-        let classroomName = 'Unknown';
-        if (data.classroomId) {
-          const classroomSnap = await getDoc(doc(db, 'classrooms', data.classroomId));
-          if (classroomSnap.exists()) {
-            classroomName = classroomSnap.data().classroomName;
-          }
-        }
-        requests.push({
-          id: docSnap.id,
-          ...data,
-          classroomName
-        });
-      }
-      renderStudentRequests(requests);
+  if (container) {
+    container.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">Loading join requests...</div>';
+  }
+
+  const teacherUid = currentUserProfile?.uid;
+  if (!teacherUid) return;
+
+  let hasLoadedOnce = false;
+  let safetyTimer = null;
+  // Safety net: if the Firestore query never responds (network issue, disabled
+  // DB, missing index), never leave the tab stuck on "Loading...".
+  safetyTimer = setTimeout(() => {
+    if (!hasLoadedOnce) renderStudentRequests([]);
+  }, 12000);
+
+  const handleSnapshot = (requests) => {
+    if (!hasLoadedOnce) {
+      hasLoadedOnce = true;
+      clearTimeout(safetyTimer);
     }
-  );
+    // Re-render on EVERY snapshot so new requests appear immediately without
+    // requiring a manual browser refresh.
+    renderStudentRequests(filterTeacherRequests(requests, teacherUid));
+    if (requests.length === 0) loadPendingFallback(teacherUid);
+  };
+
+  // Query by the selected status tab; no teacherUid where-clause is used, so
+  // missing/mismatched teacherUid can never hide a request. Belonging is
+  // resolved client-side via classId in filterTeacherRequests.
+  const statusFilter = requestsFilter === 'all' ? null : requestsFilter;
+  requestsUnsub = subscribeToClassroomRequests(handleSnapshot, statusFilter);
+}
+
+async function loadPendingFallback(teacherUid) {
+  const ownedClassroomIds = getOwnedClassroomIds(teacherUid);
+  if (ownedClassroomIds.size === 0) return;
+  try {
+    const snap = await getDocs(query(collection(getFirestore(), 'classroomRequests'), where('status', '==', 'pending')));
+    const matching = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(r => ownedClassroomIds.has(r.classId || r.classroomId));
+    if (matching.length > 0) renderStudentRequests(matching);
+  } catch (err) {
+    console.warn('Approvals fallback query failed:', err);
+  }
 }
 
 document.getElementById('approvals-filter')?.addEventListener('change', (e) => {
@@ -5992,38 +6098,30 @@ document.getElementById('approvals-filter')?.addEventListener('change', (e) => {
   loadStudentRequests();
 });
 
+// Global delegated handler so dynamically-rendered "data-close" buttons
+// (e.g. the student-profile modal footer, "Got it" in the status modal) always
+// dismiss their modal even when bound after page load.
+document.addEventListener('click', (e) => {
+  const closeBtn = e.target.closest('[data-close]');
+  if (!closeBtn) return;
+  const modalId = closeBtn.getAttribute('data-close');
+  if (!modalId) return;
+  const modal = document.getElementById(modalId);
+  if (modal) modal.style.display = 'none';
+});
+
 // ═══ Student Access Restrictions ═══
+// Account-level approval was removed. Students get immediate access; classroom
+// content is gated per-course via join requests instead. These helpers are
+// kept as no-ops so any remaining call sites never block the dashboard.
 
 function showStudentStatusModal(profile) {
   const modal = document.getElementById('modal-student-status');
-  const icon = document.getElementById('student-status-icon');
-  const title = document.getElementById('student-status-title');
-  const message = document.getElementById('student-status-message');
-  if (!modal || !profile) return;
-  if (profile.status === 'pending') {
-    icon.textContent = '⏳';
-    title.textContent = 'Account Pending Approval';
-    message.textContent = 'Your account is currently under review by a teacher. You will be able to access all features once your registration is approved. Please check back later.';
-  } else if (profile.status === 'rejected') {
-    icon.textContent = '❌';
-    title.textContent = 'Account Not Approved';
-    message.textContent = 'Your registration was not approved. Please contact your teacher for more information.';
-  } else {
-    return;
-  }
-  modal.style.display = 'flex';
+  if (modal) modal.style.display = 'none';
 }
 
 function checkAccess(tabName) {
-  if (!currentUserProfile) return false;
-  if (isTeacher(currentUserProfile)) return true;
-  if (isApproved(currentUserProfile)) return true;
-  const restricted = ['classrooms', 'assignments', 'quiz', 'notes', 'chat', 'meetings', 'attendance', 'calendar', 'notice-board'];
-  if (restricted.includes(tabName)) {
-    showStudentStatusModal(currentUserProfile);
-    return false;
-  }
-  return true;
+  return !!currentUserProfile;
 }
 
 // Hook into the tab click system to check access
@@ -6346,7 +6444,7 @@ export function initStudentDashboardFeatures(userProfile, userClassrooms = []) {
             <div class="course-progress-banner" style="background:${grad}">
               <div>
                 <h4>${c.classroomName}</h4>
-                <p style="font-size:12px; opacity:0.9; margin:2px 0 0 0;">${c.subject || c.section || 'General'}</p>
+                <p style="font-size:12px; opacity:0.9; margin:2px 0 0 0;">${c.courseCode || c.subject || c.section || 'General'}</p>
               </div>
               <span style="font-size:11px; background:rgba(255,255,255,0.2); padding:2px 8px; border-radius:10px; width:fit-content;">Instructor: ${c.teacherName || 'Teacher'}</span>
             </div>
@@ -6684,7 +6782,7 @@ export function initLiveMeetingsModule(userProfile, userClassroomsPassed = []) {
   // Populate Classroom selection dropdown
   if (classroomSelect) {
     classroomSelect.innerHTML = '<option value="">Choose classroom...</option>' + 
-      userClassrooms.map(c => `<option value="${c.classroomId}">${c.classroomName} (${c.section || c.subject || 'General'})</option>`).join('');
+      userClassrooms.map(c => `<option value="${c.classroomId}">${c.classroomName} (${c.courseCode || c.section || c.subject || 'General'})</option>`).join('');
   }
 
   // Meeting type radio toggle
@@ -6712,7 +6810,7 @@ export function initLiveMeetingsModule(userProfile, userClassroomsPassed = []) {
     const currentRooms = (userClassrooms && userClassrooms.length > 0) ? userClassrooms : userClassroomsPassed;
     if (selectEl) {
       selectEl.innerHTML = '<option value="">Choose classroom...</option>' + 
-        currentRooms.map(c => `<option value="${c.classroomId}">${c.classroomName} (${c.section || c.subject || 'General'})</option>`).join('');
+        currentRooms.map(c => `<option value="${c.classroomId}">${c.classroomName} (${c.courseCode || c.section || c.subject || 'General'})</option>`).join('');
       
       if (typeof detailCurrentClassroomId !== 'undefined' && detailCurrentClassroomId) {
         selectEl.value = detailCurrentClassroomId;

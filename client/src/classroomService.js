@@ -16,9 +16,11 @@ import {
   onSnapshot,
   serverTimestamp,
   collectionGroup,
+  arrayUnion,
 } from 'firebase/firestore';
 import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { fetchWithAuth } from './utils/api.js';
+import { createNotification } from './notificationService.js';
 
 function generateClassroomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -49,15 +51,41 @@ async function generateUniqueCode() {
 }
 
 export const CLASSROOM_THEMES = {
-  blue: { id: 'blue', name: 'Science Blue', gradient: 'linear-gradient(135deg, #1e3c72 0%, #2a5298 100%)', bg: '#1e3c72' },
-  purple: { id: 'purple', name: 'Math Purple', gradient: 'linear-gradient(135deg, #614385 0%, #516395 100%)', bg: '#614385' },
-  teal: { id: 'teal', name: 'English Teal', gradient: 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)', bg: '#11998e' },
-  amber: { id: 'amber', name: 'Arts Amber', gradient: 'linear-gradient(135deg, #f857a6 0%, #ff5858 100%)', bg: '#f857a6' },
-  indigo: { id: 'indigo', name: 'Tech Indigo', gradient: 'linear-gradient(135deg, #4776E6 0%, #8E54E9 100%)', bg: '#4776E6' },
+  blue: { id: 'blue', name: 'Classic Blue', gradient: 'linear-gradient(135deg, #3B82F6 0%, #1E3A8A 100%)', bg: '#3B82F6' },
+  electric: { id: 'electric', name: 'Neon Electric Blue', gradient: 'linear-gradient(135deg, #00F0FF 0%, #0072FF 100%)', bg: '#00F0FF' },
+  cyber: { id: 'cyber', name: 'Neon Cyber Purple', gradient: 'linear-gradient(135deg, #A855F7 0%, #6D28D9 100%)', bg: '#A855F7' },
+  emerald: { id: 'emerald', name: 'Neon Emerald Green', gradient: 'linear-gradient(135deg, #10B981 0%, #065F46 100%)', bg: '#10B981' },
+  hotpink: { id: 'hotpink', name: 'Neon Hot Pink', gradient: 'linear-gradient(135deg, #FF007F 0%, #C0004F 100%)', bg: '#FF007F' },
+  sunset: { id: 'sunset', name: 'Neon Sunset Orange', gradient: 'linear-gradient(135deg, #FF6B00 0%, #E11D48 100%)', bg: '#FF6B00' },
+  yellow: { id: 'yellow', name: 'Neon Bright Yellow', gradient: 'linear-gradient(135deg, #FFE600 0%, #FFB300 100%)', bg: '#FFE600' },
+  indigo: { id: 'indigo', name: 'Neon Deep Indigo', gradient: 'linear-gradient(135deg, #6366F1 0%, #312E81 100%)', bg: '#6366F1' },
+  crimson: { id: 'crimson', name: 'Neon Crimson Red', gradient: 'linear-gradient(135deg, #FF2A6D 0%, #8A0E2F 100%)', bg: '#FF2A6D' },
 };
 
+const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+function darkenHex(hex, percent) {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+  const num = parseInt(full, 16);
+  let r = (num >> 16) & 0xff;
+  let g = (num >> 8) & 0xff;
+  let b = num & 0xff;
+  const amt = Math.round(2.55 * percent);
+  r = Math.max(0, Math.min(255, r + amt));
+  g = Math.max(0, Math.min(255, g + amt));
+  b = Math.max(0, Math.min(255, b + amt));
+  return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+}
+
 export function getThemeGradient(themeId) {
-  return (CLASSROOM_THEMES[themeId] || CLASSROOM_THEMES.blue).gradient;
+  const theme = CLASSROOM_THEMES[themeId];
+  if (theme) return theme.gradient;
+  if (typeof themeId === 'string' && HEX_RE.test(themeId.trim())) {
+    const hex = themeId.trim();
+    return `linear-gradient(135deg, ${hex} 0%, ${darkenHex(hex, -45)} 100%)`;
+  }
+  return CLASSROOM_THEMES.blue.gradient;
 }
 
 export function generateInviteLink(classroomCode) {
@@ -75,6 +103,7 @@ export async function createClassroom(data, user) {
   }
 
   const themeColor = data.themeColor || 'blue';
+  const teacherName = (data.teacherName || user.displayName || user.name || 'Teacher').trim();
   let coverImageUrl = '';
 
   // 1. Cover upload logic if file is provided
@@ -96,9 +125,8 @@ export async function createClassroom(data, user) {
       body: JSON.stringify({
         classroomName: data.classroomName,
         description: data.description,
-        section: data.section,
-        subject: data.subject,
-        room: data.room,
+        courseCode: data.courseCode,
+        teacherName,
         themeColor,
         coverImageUrl,
       }),
@@ -127,14 +155,12 @@ export async function createClassroom(data, user) {
     classroomName: data.classroomName.trim(),
     classroomCode: code,
     description: data.description ? data.description.trim() : '',
-    section: data.section ? data.section.trim() : '',
-    subject: data.subject ? data.subject.trim() : '',
-    room: data.room ? data.room.trim() : '',
+    courseCode: data.courseCode ? String(data.courseCode).trim() : '',
+    teacherName,
     themeColor,
     coverImageUrl,
     createdBy: user.uid,
     teacherId: user.uid,
-    teacherName: user.displayName || user.name || 'Teacher',
     teacherPhotoURL: user.photoURL || '',
     createdAt: serverTimestamp(),
     createdDate: new Date().toISOString(),
@@ -199,9 +225,8 @@ export async function updateClassroom(classroomId, data, user) {
       body: JSON.stringify({
         classroomName: data.classroomName,
         description: data.description,
-        section: data.section,
-        subject: data.subject,
-        room: data.room,
+        courseCode: data.courseCode,
+        teacherName: data.teacherName,
         themeColor: data.themeColor,
         ...(coverImageUrl ? { coverImageUrl } : {}),
       }),
@@ -224,9 +249,8 @@ export async function updateClassroom(classroomId, data, user) {
   const updates = {
     classroomName: data.classroomName.trim(),
     description: data.description ? data.description.trim() : '',
-    section: data.section ? data.section.trim() : '',
-    subject: data.subject ? data.subject.trim() : '',
-    room: data.room ? data.room.trim() : '',
+    courseCode: data.courseCode ? String(data.courseCode).trim() : '',
+    ...(data.teacherName ? { teacherName: String(data.teacherName).trim() } : {}),
     ...(data.themeColor ? { themeColor: data.themeColor } : {}),
     coverImageUrl: finalCoverUrl,
     updatedAt: serverTimestamp(),
@@ -301,32 +325,20 @@ export async function validateJoinCode(code) {
     return { valid: false, error: 'Invalid Classroom Code' };
   }
   const classroomDoc = snap.docs[0];
+  const cData = classroomDoc.data();
   return { 
     valid: true, 
     classroomId: classroomDoc.id, 
-    teacherId: classroomDoc.data().teacherId,
-    classroomCode: classroomDoc.data().classroomCode,
-    classroomName: classroomDoc.data().classroomName
+    teacherId: cData.teacherId || cData.createdBy || '',
+    classroomCode: cData.classroomCode,
+    classroomName: cData.classroomName
   };
 }
 
 export async function joinClassroomByCode(code, user) {
   if (!code || !code.trim()) throw new Error('Please enter a classroom code.');
-  try {
-    const res = await fetchWithAuth('/api/classrooms/join', {
-      method: 'POST',
-      body: JSON.stringify({ code: code.trim() }),
-    });
-    if (res && res.classId) {
-      return {
-        classroomId: res.classId,
-        joinStatus: res.status === 'pending' ? 'pending' : 'approved',
-        ...res,
-      };
-    }
-  } catch (err) {
-    console.warn('Express API joinClassroom failed, falling back to Firestore:', err.message);
-  }
+  // Direct Firestore flow — intentionally bypasses the Express API so the join
+  // request persists even if a backend route fails silently.
   const db = getFirestore();
   const q = query(
     collection(db, 'classrooms'),
@@ -336,6 +348,8 @@ export async function joinClassroomByCode(code, user) {
   const snap = await getDocs(q);
   if (snap.empty) throw new Error('No active classroom found with that code.');
   const classroomDoc = snap.docs[0];
+  const classroomData = classroomDoc.data();
+  console.log('[DEBUG Join] Found classroom:', classroomDoc.id, classroomData.classroomName || classroomData.courseName, 'Teacher:', classroomData.teacherUid || classroomData.ownerId);
   const classroomId = classroomDoc.id;
   const memberRef = doc(db, 'classrooms', classroomId, 'members', user.uid);
   const memberSnap = await getDoc(memberRef);
@@ -345,15 +359,53 @@ export async function joinClassroomByCode(code, user) {
   if (joinReqSnap.exists() && joinReqSnap.data().status === 'pending') {
     throw new Error('You already have a pending join request for this classroom.');
   }
+  const resolvedTeacherUid = classroomData.ownerId || classroomData.teacherUid || classroomData.createdBy || classroomData.userId || classroomData.teacherId || '';
+  const studentName = user.displayName || user.name || 'Student';
+  const requestId = `${classroomId}_${user.uid}`;
+  const requestDoc = {
+    requestId,
+    studentUid: user.uid,
+    uid: user.uid,
+    displayName: studentName,
+    studentName,
+    email: user.email || '',
+    studentEmail: user.email || '',
+    studentId: user.studentId || user.roll || '',
+    department: user.department || '',
+    photoURL: user.photoURL || '',
+    role: (user.role || 'student').toLowerCase(),
+    classId: classroomId,
+    className: classroomData.classroomName || classroomData.courseName || 'Classroom',
+    classroomId,
+    classroomName: classroomData.classroomName || classroomData.courseName || 'Classroom',
+    classroomCode: classroomData.classroomCode || '',
+    teacherUid: resolvedTeacherUid,
+    ownerId: resolvedTeacherUid,
+    teacherId: resolvedTeacherUid,
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+  // Direct write into the top-level collection; the approvals tab subscribes to
+  // it. The per-classroom subcollection mirrors it for classroom-detail views.
+  await setDoc(doc(db, 'classroomRequests', requestId), requestDoc);
+  console.log('[DEBUG Join] Request successfully saved to Firestore!');
   await setDoc(joinReqRef, {
     uid: user.uid,
-    displayName: user.displayName || 'Unknown',
-    email: user.email || '',
-    photoURL: user.photoURL || '',
-    role: user.role,
+    displayName: requestDoc.studentName,
+    email: requestDoc.studentEmail,
+    studentId: requestDoc.studentId,
+    photoURL: requestDoc.photoURL || '',
+    role: requestDoc.role,
     requestedAt: serverTimestamp(),
     status: 'pending',
   });
+  // Notify the teacher (best-effort, non-blocking) so the bell badge updates.
+  if (resolvedTeacherUid) {
+    createNotification(resolvedTeacherUid, 'join_request', 'New Join Request', `${studentName} requested to join ${requestDoc.className || 'your classroom'}`, {
+      teacherUid: resolvedTeacherUid,
+      classId: classroomId,
+    }).catch(() => {});
+  }
   await addDoc(collection(db, 'classrooms', classroomId, 'activity'), {
     type: 'join_requested',
     description: `${user.displayName || 'A student'} requested to join`,
@@ -413,8 +465,8 @@ export async function approveMember(classroomId, memberUid, user) {
   const reqData = joinReqSnap.data();
   await setDoc(doc(db, 'classrooms', classroomId, 'members', memberUid), {
     uid: memberUid,
-    displayName: reqData.displayName,
-    email: reqData.email || '',
+    displayName: reqData.displayName || reqData.studentName || 'Unknown',
+    email: reqData.email || reqData.studentEmail || '',
     photoURL: reqData.photoURL || '',
     role: (reqData.role || 'student').toLowerCase(),
     joinedAt: serverTimestamp(),
@@ -423,8 +475,23 @@ export async function approveMember(classroomId, memberUid, user) {
     approvedAt: serverTimestamp(),
   });
   await deleteDoc(joinReqRef);
+  try {
+    await updateDoc(doc(db, 'classroomRequests', `${classroomId}_${memberUid}`), {
+      status: 'approved',
+      approvedBy: user.uid,
+      approvedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+  } catch (e) {
+    console.warn('Could not update top-level classroomRequests:', e);
+  }
   const currentCount = classroomSnap.data().memberCount || 0;
-  await updateDoc(classroomRef, { memberCount: currentCount + 1, updatedAt: serverTimestamp() });
+  await updateDoc(classroomRef, {
+    memberCount: currentCount + 1,
+    students: arrayUnion(memberUid),
+    members: arrayUnion(memberUid),
+    updatedAt: serverTimestamp()
+  });
   await addDoc(collection(db, 'classrooms', classroomId, 'activity'), {
     type: 'member_approved',
     description: `${reqData.displayName} joined the classroom`,
@@ -451,6 +518,15 @@ export async function rejectMember(classroomId, memberUid, user) {
     throw new Error('Permission denied.');
   }
   await deleteDoc(doc(db, 'classrooms', classroomId, 'joinRequests', memberUid));
+  try {
+    await updateDoc(doc(db, 'classroomRequests', `${classroomId}_${memberUid}`), {
+      status: 'rejected',
+      rejectedBy: user.uid,
+      updatedAt: serverTimestamp()
+    });
+  } catch (e) {
+    console.warn('Could not update top-level classroomRequests:', e);
+  }
   await addDoc(collection(db, 'classrooms', classroomId, 'activity'), {
     type: 'join_rejected',
     description: `Join request rejected`,
@@ -763,6 +839,27 @@ export function subscribeToJoinRequests(classroomId, callback = () => {}) {
   return onSnapshot(
     query(collection(getFirestore(), 'classrooms', classroomId, 'joinRequests'), orderBy('requestedAt', 'desc')),
     (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+  );
+}
+
+// Teacher-wide live subscription to join requests. Queried purely on status so
+// it completely bypasses any missing or mismatched teacherUid strings; which
+// requests belong to this teacher is resolved client-side in the approvals tab
+// by matching req.classId against the teacher's classroom IDs.
+export function subscribeToClassroomRequests(callback = () => {}, statusFilter = null) {
+  const db = getFirestore();
+  const baseQuery = collection(db, 'classroomRequests');
+  const q = statusFilter ? query(baseQuery, where('status', '==', statusFilter)) : query(baseQuery);
+  return onSnapshot(
+    q,
+    (snap) => {
+      console.log('[Approvals] classroomRequests snapshot fired. Docs:', snap.size);
+      callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    },
+    (err) => {
+      console.warn('subscribeToClassroomRequests error:', err);
+      callback([]);
+    }
   );
 }
 

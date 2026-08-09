@@ -46,14 +46,60 @@ export function isStudent(profile) {
   return profile && normalizeRole(profile.role) === ROLES.STUDENT;
 }
 
+// Account-level approval is removed: students get immediate access when they
+// sign up. Classroom membership is gated per-classroom via join requests.
 export function isApproved(profile) {
   if (!profile) return false;
   if (isTeacher(profile)) return true;
-  return profile.status === 'approved';
+  if (profile.status === 'rejected') return false;
+  return true;
 }
 
 export function isPending(profile) {
-  return profile && isStudent(profile) && profile.status === 'pending';
+  return false;
+}
+
+/**
+ * Ensures every student account carries explicit approval flags so legacy
+ * accounts never get stuck in a "pending" state. Students missing a `status`
+ * default to 'approved' (immediate access). Returns a NEW object when changes
+ * are needed (so callers can detect and persist them), otherwise the original
+ * reference.
+ */
+function normalizeApprovalFlags(data) {
+  if (!data || !data.role) return data;
+  if (normalizeRole(data.role) !== ROLES.STUDENT) return data;
+  const next = { ...data };
+  let changed = false;
+  if (next.status === undefined) {
+    next.status = 'approved';
+    changed = true;
+  }
+  if (next.isApproved === undefined) {
+    next.isApproved = true;
+    changed = true;
+  }
+  if (next.status === 'pending') {
+    next.status = 'approved';
+    changed = true;
+  }
+  if (next.isApproved === false) {
+    next.isApproved = true;
+    changed = true;
+  }
+  return changed ? next : data;
+}
+
+async function persistApprovalFlags(userRef, data) {
+  try {
+    await updateDoc(userRef, {
+      status: data.status,
+      isApproved: data.isApproved,
+      updatedAt: serverTimestamp()
+    });
+  } catch (e) {
+    console.warn('Could not persist approval flags:', e);
+  }
 }
 
 export function requireRole(profile, role) {
@@ -171,7 +217,8 @@ export async function createUser(user, selectedRole, extraData = {}) {
       session: isNewStudent ? (extraData.session || '') : '',
       designation: !isNewStudent ? (extraData.designation || '') : '',
       officeRoom: !isNewStudent ? (extraData.officeRoom || '') : '',
-      status: isNewStudent ? 'pending' : 'approved',
+      status: 'approved',
+      isApproved: true,
       phone: extraData.phone || '',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),

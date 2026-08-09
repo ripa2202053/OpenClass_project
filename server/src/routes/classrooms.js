@@ -271,6 +271,55 @@ router.post('/join', verifyAuthToken, async (req, res) => {
       status: 'pending',
     });
 
+    // Top-level collection makes the teacher's approvals tab a simple query on
+    // teacherUid. The per-classroom subcollection mirrors it for classroom-detail
+    // views that already subscribe to joinRequests.
+    const resolvedTeacherUid = classData.ownerId || classData.teacherUid || classData.createdBy || classData.userId || classData.teacherId || '';
+    console.log('[DEBUG Join Request] Class Owner UID:', classData.ownerId || classData.teacherUid, 'Current User:', user.uid);
+    console.log('[Join API] Student joining class:', classId, 'Teacher:', resolvedTeacherUid);
+    const requestId = `${classId}_${user.uid}`;
+    const globalReqRef = db.collection('classroomRequests').doc(requestId);
+    await globalReqRef.set({
+      requestId,
+      studentUid: user.uid,
+      uid: user.uid,
+      displayName: user.displayName || user.name || user.email || 'Student',
+      studentName: user.displayName || user.name || user.email || 'Student',
+      email: user.email || '',
+      studentEmail: user.email || '',
+      studentId: user.studentId || user.roll || '',
+      department: user.department || '',
+      photoURL: requestedBy.photoURL || '',
+      role: 'student',
+      classId,
+      className: classData.classroomName || classData.courseName || 'Classroom',
+      classroomId: classId,
+      classroomName: classData.classroomName || classData.courseName || 'Classroom',
+      classroomCode: classData.classroomCode || '',
+      teacherUid: resolvedTeacherUid,
+      ownerId: resolvedTeacherUid,
+      teacherId: resolvedTeacherUid,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+
+    // Notify the teacher (best-effort, non-blocking) so the bell badge updates.
+    if (resolvedTeacherUid) {
+      await db.collection('notifications').add({
+        recipientId: resolvedTeacherUid,
+        userId: resolvedTeacherUid,
+        teacherUid: resolvedTeacherUid,
+        classId,
+        type: 'join_request',
+        title: 'New Join Request',
+        message: `${requestedBy.displayName} requested to join ${classData.classroomName || classData.courseName || 'your classroom'}`,
+        body: `${requestedBy.displayName} requested to join ${classData.classroomName || classData.courseName || 'your classroom'}`,
+        isRead: false,
+        read: false,
+        createdAt: new Date().toISOString(),
+      }).catch(() => {});
+    }
+
     // Keep the classroom document arrays in sync
     await classRef.update({
       pendingRequests: FieldValue.arrayUnion(requestedBy),
@@ -370,6 +419,19 @@ router.post('/:id/requests/:userId/accept', verifyAuthToken, async (req, res) =>
     // Remove the request
     await joinReqRef.delete();
 
+    // Keep the top-level classroomRequests doc in sync so the teacher's
+    // approvals tab (which queries teacherUid) reflects the approval live.
+    try {
+      await db.collection('classroomRequests').doc(`${id}_${userId}`).update({
+        status: 'approved',
+        approvedBy: user.uid,
+        approvedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('Could not update top-level classroomRequests on accept:', e.message);
+    }
+
     // Keep the classroom document arrays + counts in sync
     const pendingAfter = (classSnap.data().pendingRequests || [])
       .filter(r => (r.uid || r.userId) !== userId);
@@ -416,6 +478,18 @@ router.post('/:id/requests/:userId/reject', verifyAuthToken, async (req, res) =>
     }
 
     await classRef.collection('joinRequests').doc(userId).delete();
+
+    // Keep the top-level classroomRequests doc in sync so the teacher's
+    // approvals tab (which queries teacherUid) reflects the rejection live.
+    try {
+      await db.collection('classroomRequests').doc(`${id}_${userId}`).update({
+        status: 'rejected',
+        rejectedBy: user.uid,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('Could not update top-level classroomRequests on reject:', e.message);
+    }
 
     const pendingAfter = (classSnap.data().pendingRequests || [])
       .filter(r => (r.uid || r.userId) !== userId);
