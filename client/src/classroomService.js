@@ -1,3 +1,4 @@
+import { getAuth } from 'firebase/auth';
 import {
   getFirestore,
   collection,
@@ -103,7 +104,16 @@ export async function createClassroom(data, user) {
       }),
     });
     if (res && res.id) {
-      return { classroomId: res.id, ...res };
+      const createdObj = { classroomId: res.id, ...res };
+      try {
+        const cacheKey = `openclass_cached_classrooms_${user.uid}`;
+        const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+        if (!cached.some(c => c.classroomId === res.id)) {
+          cached.unshift(createdObj);
+          localStorage.setItem(cacheKey, JSON.stringify(cached));
+        }
+      } catch (e) {}
+      return createdObj;
     }
   } catch (err) {
     console.warn('Express API createClassroom failed, falling back to Firestore:', err.message);
@@ -156,7 +166,17 @@ export async function createClassroom(data, user) {
     timestamp: serverTimestamp(),
   });
 
-  return { classroomId: docRef.id, ...classroom };
+  const createdObj = { classroomId: docRef.id, ...classroom };
+  try {
+    const cacheKey = `openclass_cached_classrooms_${user.uid}`;
+    const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+    if (!cached.some(c => c.classroomId === docRef.id)) {
+      cached.unshift(createdObj);
+      localStorage.setItem(cacheKey, JSON.stringify(cached));
+    }
+  } catch (e) {}
+
+  return createdObj;
 }
 
 export async function updateClassroom(classroomId, data, user) {
@@ -507,7 +527,6 @@ export function subscribeToUserClassrooms(uid, userRole, callback = () => {}) {
 
   console.log('[ClassroomService] subscribeToUserClassrooms called. uid:', uid, 'userRole:', userRole, 'effectiveRole:', effectiveRole, 'isTeacherRole:', isTeacherRole);
 
-  // Safety net: remove the "Loading your classrooms..." placeholder from the DOM.
   function clearClassroomsLoading() {
     try {
       const listEl = document.getElementById('classroom-list');
@@ -521,7 +540,6 @@ export function subscribeToUserClassrooms(uid, userRole, callback = () => {}) {
     }
   }
 
-  // Fallback UI if the render callback throws: never leave the user on a blank/stuck screen.
   function renderClassroomsFallbackError(errorMsg) {
     try {
       const listEl = document.getElementById('classroom-list');
@@ -538,22 +556,40 @@ export function subscribeToUserClassrooms(uid, userRole, callback = () => {}) {
     } catch (e) {}
   }
 
+  const cacheKey = `openclass_cached_classrooms_${uid}`;
   let hasDelivered = false;
+
   const deliver = (classrooms, errorMsg) => {
     hasDelivered = true;
-    console.log('[ClassroomService] deliver() called with', classrooms.length, 'classrooms. errorMsg:', errorMsg);
+    console.log('[ClassroomService] deliver() called with', classrooms ? classrooms.length : 0, 'classrooms. errorMsg:', errorMsg);
     clearClassroomsLoading();
     if (typeof callback !== 'function') {
       console.warn('[ClassroomService] deliver called, but callback is not a function.');
       return;
     }
+
+    if (Array.isArray(classrooms) && classrooms.length > 0) {
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify(classrooms));
+      } catch (e) {}
+    }
+
     try {
-      callback(classrooms, errorMsg);
+      callback(classrooms || [], errorMsg);
     } catch (err) {
       console.warn('Classrooms callback error:', err);
       renderClassroomsFallbackError(errorMsg);
     }
   };
+
+  // Deliver cached classrooms immediately if present
+  try {
+    const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+    if (Array.isArray(cached) && cached.length > 0) {
+      console.log('[ClassroomService] Delivering cached classrooms immediately:', cached.length);
+      deliver(cached);
+    }
+  } catch (e) {}
 
   fetchWithAuth('/api/classrooms')
     .then(data => {
@@ -562,8 +598,6 @@ export function subscribeToUserClassrooms(uid, userRole, callback = () => {}) {
         const formatted = data.map(c => ({ classroomId: c.id || c.classroomId, ...c }));
         console.log('[ClassroomService] API returned', formatted.length, 'classroom(s). Delivering.');
         deliver(formatted);
-      } else {
-        console.log('[ClassroomService] API returned empty or non-array. Waiting for Firestore.');
       }
     })
     .catch(err => {
@@ -573,131 +607,148 @@ export function subscribeToUserClassrooms(uid, userRole, callback = () => {}) {
   const classroomsRef = collection(db, 'classrooms');
 
   let fsUnsub;
-  if (isTeacherRole) {
-    console.log('[ClassroomService] Setting up Firestore teacher snapshot for uid:', uid);
-    fsUnsub = onSnapshot(
-      query(classroomsRef, where('isActive', '==', true)),
-      (snapshot) => {
-        console.log('[ClassroomService] Firestore teacher snapshot fired. Total docs:', snapshot.docs.length);
-        const userClassrooms = snapshot.docs
-          .filter(d => {
-            const data = d.data();
-            const match = data.createdBy === uid || data.teacherId === uid;
-            console.log('[ClassroomService]   doc', d.id, 'createdBy:', data.createdBy, 'teacherId:', data.teacherId, 'match:', match);
-            return match;
-          })
-          .map(d => ({ classroomId: d.id, ...d.data() }));
+  fsUnsub = onSnapshot(
+    classroomsRef,
+    async (snapshot) => {
+      console.log('[ClassroomService] Firestore snapshot fired. Total docs:', snapshot.docs.length);
+      try {
+        const authUser = getAuth().currentUser;
+        const authUid = authUser?.uid || '';
+        const authEmail = (authUser?.email || '').toLowerCase();
+        const profile = window.currentUserProfile || {};
+        const profileUid = profile.uid || '';
+        const profileEmail = (profile.email || '').toLowerCase();
+
+        const targetUids = new Set([uid, authUid, profileUid].filter(Boolean));
+        const targetEmails = new Set([authEmail, profileEmail].filter(Boolean));
+
+        const userClassrooms = [];
+        const promises = snapshot.docs.map(async (d) => {
+          const data = d.data();
+          if (data.isDeleted === true || data.isActive === false) return;
+
+          let isMatch = isTeacherRole;
+
+          if (!isMatch) {
+            for (const uId of targetUids) {
+              if (data.createdBy === uId || data.teacherId === uId) { isMatch = true; break; }
+              if (Array.isArray(data.members) && data.members.includes(uId)) { isMatch = true; break; }
+            }
+          }
+
+          if (!isMatch && (data.teacherEmail || data.createdEmail)) {
+            const e1 = String(data.teacherEmail || '').toLowerCase();
+            const e2 = String(data.createdEmail || '').toLowerCase();
+            if ((e1 && targetEmails.has(e1)) || (e2 && targetEmails.has(e2))) {
+              isMatch = true;
+            }
+          }
+
+          if (isMatch) {
+            userClassrooms.push({ classroomId: d.id, ...data });
+            return;
+          }
+
+          for (const uId of targetUids) {
+            try {
+              const memberSnap = await getDoc(doc(db, 'classrooms', d.id, 'members', uId));
+              if (memberSnap.exists() && memberSnap.data().approved !== false) {
+                userClassrooms.push({ classroomId: d.id, ...data });
+                break;
+              }
+            } catch (e) {}
+          }
+        });
+
+        await Promise.all(promises);
+
+        if (!isTeacherRole) {
+          const joinedIds = new Set(userClassrooms.map(c => c.classroomId));
+          for (const uId of targetUids) {
+            try {
+              const pendingSnap = await getDocs(query(
+                collectionGroup(db, 'joinRequests'),
+                where('uid', '==', uId)
+              ));
+              const pendingClassroomIds = new Set();
+              pendingSnap.docs.forEach(d => {
+                if (d.data().status === 'pending') {
+                  const requestClassroomId = d.ref.path.split('/')[1];
+                  if (requestClassroomId && !joinedIds.has(requestClassroomId)) {
+                    pendingClassroomIds.add(requestClassroomId);
+                  }
+                }
+              });
+              if (pendingClassroomIds.size > 0) {
+                const pendingPromises = [...pendingClassroomIds].map(async (cid) => {
+                  const cSnap = await getDoc(doc(db, 'classrooms', cid));
+                  if (cSnap.exists() && cSnap.data().isDeleted !== true && cSnap.data().isActive !== false) {
+                    userClassrooms.push({ classroomId: cSnap.id, ...cSnap.data(), joinStatus: 'pending' });
+                  }
+                });
+                await Promise.all(pendingPromises);
+              }
+            } catch (pendingErr) {
+              console.warn('Pending requests query skipped:', pendingErr.message);
+            }
+          }
+        }
+
+        // Merge with locally cached classrooms so newly created items are never lost
+        try {
+          const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+          if (Array.isArray(cached)) {
+            cached.forEach(c => {
+              if (!userClassrooms.some(existing => existing.classroomId === c.classroomId)) {
+                userClassrooms.push(c);
+              }
+            });
+          }
+        } catch (e) {}
 
         userClassrooms.sort((a, b) => {
           const ta = a.createdAt?.seconds || (a.createdDate ? new Date(a.createdDate).getTime() : 0);
           const tb = b.createdAt?.seconds || (b.createdDate ? new Date(b.createdDate).getTime() : 0);
           return tb - ta;
         });
-        console.log('[ClassroomService] Firestore teacher classrooms matched:', userClassrooms.length);
+
+        console.log('[ClassroomService] Firestore matched classrooms:', userClassrooms.length);
         deliver(userClassrooms);
-      },
-      (error) => {
-        console.warn('[ClassroomService] Firestore subscription error for teacher classrooms:', error.message);
-      }
-    );
-  } else {
-    fsUnsub = onSnapshot(
-      query(classroomsRef, where('isActive', '==', true)),
-      async (snapshot) => {
+      } catch (error) {
+        console.warn('Firestore subscription process error:', error.message);
         try {
-          const userClassrooms = [];
-          const promises = snapshot.docs.map(async (d) => {
-            const data = d.data();
-            if (data.createdBy === uid || (Array.isArray(data.members) && data.members.includes(uid))) {
-              userClassrooms.push({ classroomId: d.id, ...data });
-              return;
-            }
-            try {
-              const memberSnap = await getDoc(doc(db, 'classrooms', d.id, 'members', uid));
-              if (memberSnap.exists() && memberSnap.data().approved === true) {
-                userClassrooms.push({ classroomId: d.id, ...data });
-              }
-            } catch (e) {}
-          });
-          await Promise.all(promises);
-
-          // Safely query pending join requests without crashing on missing collectionGroup index
-          const joinedIds = new Set(userClassrooms.map(c => c.classroomId));
-          try {
-            const pendingSnap = await getDocs(query(
-              collectionGroup(db, 'joinRequests'),
-              where('uid', '==', uid)
-            ));
-            const pendingClassroomIds = new Set();
-            pendingSnap.docs.forEach(d => {
-              if (d.data().status === 'pending') {
-                const requestClassroomId = d.ref.path.split('/')[1];
-                if (requestClassroomId && !joinedIds.has(requestClassroomId)) {
-                  pendingClassroomIds.add(requestClassroomId);
-                }
-              }
-            });
-            if (pendingClassroomIds.size > 0) {
-              const pendingClassrooms = [];
-              const pendingPromises = [...pendingClassroomIds].map(async (cid) => {
-                const cSnap = await getDoc(doc(db, 'classrooms', cid));
-                if (cSnap.exists()) {
-                  pendingClassrooms.push({ classroomId: cSnap.id, ...cSnap.data(), joinStatus: 'pending' });
-                }
-              });
-              await Promise.all(pendingPromises);
-              userClassrooms.push(...pendingClassrooms);
-            }
-          } catch (pendingErr) {
-            console.warn('collectionGroup query failed (index missing), skipping pending requests:', pendingErr.message);
-          }
-
-          // Fallback to local storage cached joined classrooms for student
-          try {
-            const cacheKey = `openclass_joined_${uid}`;
-            const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
-            cached.forEach(c => {
-              if (!userClassrooms.some(existing => existing.classroomId === c.classroomId)) {
-                userClassrooms.push(c);
-              }
-            });
-          } catch (e) {}
-
-          console.log('Firestore student classrooms loaded:', userClassrooms.length);
-          deliver(userClassrooms);
-        } catch (error) {
-          console.warn('Firestore subscription error for student classrooms:', error.message);
-          try {
-            const cacheKey = `openclass_joined_${uid}`;
-            const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
-            deliver(cached);
-          } catch (e) {
-            deliver([]);
-          }
-        }
-      },
-      (error) => {
-        console.warn('Firestore subscription error for student classrooms:', error.message);
-        try {
-          const cacheKey = `openclass_joined_${uid}`;
           const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
           deliver(cached);
         } catch (e) {
           deliver([]);
         }
       }
-    );
-  }
+    },
+    (error) => {
+      console.warn('Firestore subscription error:', error.message);
+      try {
+        const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+        deliver(cached);
+      } catch (e) {
+        deliver([]);
+      }
+    }
+  );
 
   const safetyTimer = setTimeout(() => {
     if (!hasDelivered) {
-      deliver([], 'Loading your classrooms timed out. Please refresh the page.');
+      try {
+        const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+        deliver(cached);
+      } catch (e) {
+        deliver([], 'Loading your classrooms timed out. Please refresh the page.');
+      }
     }
-  }, 5000);
+  }, 4000);
 
   return () => {
     clearTimeout(safetyTimer);
-    fsUnsub();
+    if (typeof fsUnsub === 'function') fsUnsub();
   };
 }
 

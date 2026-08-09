@@ -89,11 +89,37 @@ let chatChannelsUnsubscribe = null;
 let chatMessagesUnsubscribe = null;
 let chatTypingUnsubscribe = null;
 let userPrivateChatsUnsub = null;
+let assignmentsUnsub = null;
+let quizzesUnsub = null;
+let notesUnsub = null;
+let privateChatUnsub = null;
+let meetingsUnsub = null;
+let globalMeetingsUnsub = null;
+let detailAttendanceUnsub = null;
+let globalAttendanceUnsubs = [];
+let studentHistoryUnsub = null;
+let remindersUnsub = null;
+let notificationsUnsub = null;
+let requestsUnsub = null;
+let teacherMeetingsUnsub = null;
+let detailStatsUnsub = null;
+let detailMembersUnsub = null;
+let detailRequestsUnsub = null;
+let detailActivityUnsub = null;
+let detailNoticesUnsub = null;
+let calendarEventsCache = [];
+let selectedCalendarDay = null;
 const notifiedMessageIds = new Set();
 let currentChannelId = null;
 let typingTimeout = null;
 let roleSelectionResolve = null;
 let selectedFirstLoginRole = null;
+
+// Calendar + classroom state (module-global so renderCalendar / loadCalendarEvents
+// and every event handler can safely read/mutate them without TDZ or ReferenceErrors)
+let userClassrooms = [];
+let calendarDate = new Date();
+let calendarView = 'month';
 
 async function signIn() {
   try {
@@ -1673,16 +1699,18 @@ document.getElementById('btn-create-channel')?.addEventListener('click', async (
   }
 });
 
-messageInputElement.addEventListener('input', () => {
-  if (!currentChannelId || !getAuth().currentUser) return;
-  setTyping(currentChannelId, getAuth().currentUser.uid, getUserName(), true);
-  if (typingTimeout) clearTimeout(typingTimeout);
-  typingTimeout = setTimeout(() => {
-    if (currentChannelId && getAuth().currentUser) {
-      setTyping(currentChannelId, getAuth().currentUser.uid, getUserName(), false);
-    }
-  }, 2000);
-});
+if (messageInputElement) {
+  messageInputElement.addEventListener('input', () => {
+    if (!currentChannelId || !getAuth().currentUser) return;
+    setTyping(currentChannelId, getAuth().currentUser.uid, getUserName(), true);
+    if (typingTimeout) clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => {
+      if (currentChannelId && getAuth().currentUser) {
+        setTyping(currentChannelId, getAuth().currentUser.uid, getUserName(), false);
+      }
+    }, 2000);
+  });
+}
 
 const emojiBtn = document.getElementById('chat-emoji-btn');
 const emojiPicker = document.getElementById('chat-emoji-picker');
@@ -1822,10 +1850,39 @@ var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
           <img src="https://www.gstatic.com/images/branding/product/2x/classroom_64dp.png" alt="Classroom" style="width: 64px; opacity: 0.6; margin-bottom: 20px;">
           <h2>No classrooms created yet</h2>
           <p id="classroom-empty-text" style="color:var(--text-muted); max-width:440px; margin:0 auto 20px auto;">Create a new classroom to start managing your students and live sessions.</p>
-          <button type="button" class="btn btn-primary" onclick="document.getElementById('btn-create-classroom')?.click()">
-            <i class="material-icons">add</i> Create Class
-          </button>
+          <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary" onclick="const m=document.getElementById('modal-create-classroom'); if(m){ m.style.display='flex'; m.style.zIndex='999999'; }">
+              <i class="material-icons">add</i> Create Class
+            </button>
+            <button type="button" id="btn-load-sample-teacher-class" class="btn btn-outline" style="padding:10px 20px; font-size:13px;">
+              <i class="material-icons" style="color:var(--primary); font-size:18px;">auto_awesome</i> Load Sample Class
+            </button>
+          </div>
         </div>`;
+
+      const sampleTeacherBtn = document.getElementById('btn-load-sample-teacher-class');
+      if (sampleTeacherBtn) {
+        sampleTeacherBtn.onclick = () => {
+          const teacherUid = currentUserProfile?.uid || getAuth().currentUser?.uid || 'teacher-id';
+          const sampleClass = {
+            classroomId: 'cs101-teacher-demo',
+            classroomName: 'Computer Science 101: Web Development',
+            subject: 'Computer Science',
+            section: 'Section A (Fall 2026)',
+            classroomCode: 'CS101DEMO',
+            teacherName: currentUserProfile?.displayName || 'Teacher',
+            teacherEmail: currentUserProfile?.email || 'teacher@openclass.edu',
+            memberCount: 24,
+            description: 'Master HTML5, CSS3, JavaScript, web development architecture, and cloud apps.',
+            createdAt: { seconds: Date.now() / 1000 },
+            createdBy: teacherUid,
+            teacherId: teacherUid,
+            themeColor: 'blue',
+            isActive: true
+          };
+          renderClassrooms([sampleClass]);
+        };
+      }
     } else {
       listEl.innerHTML = `
         <div class="empty-state-lg" id="classroom-empty-state" style="text-align:center; padding:40px 24px; background:var(--card-bg); border:1px solid var(--border); border-radius:16px; margin-top:10px;">
@@ -2212,7 +2269,15 @@ if (formCreateClass) {
       formCreateClass.reset();
       document.getElementById('modal-create-classroom').style.display = 'none';
       
-      // Refresh classrooms view immediately so the newly created classroom appears on screen
+      if (classroom && classroom.classroomId) {
+        if (!Array.isArray(userClassrooms)) userClassrooms = [];
+        if (!userClassrooms.some(c => c.classroomId === classroom.classroomId)) {
+          userClassrooms.unshift(classroom);
+        }
+        renderClassrooms(userClassrooms);
+      }
+
+      // Refresh classrooms view so subscription stays live
       if (activeProfile.uid) {
         if (classroomsUnsubscribe) classroomsUnsubscribe();
         classroomsUnsubscribe = subscribeToUserClassrooms(activeProfile.uid, activeProfile.role || 'teacher', renderClassrooms);
@@ -2403,11 +2468,11 @@ if (formEditClass) {
 
 // ─── CLASSROOM DETAIL ──────────────────────────────────────────
 
-let detailStatsUnsub = null;
-let detailMembersUnsub = null;
-let detailRequestsUnsub = null;
-let detailActivityUnsub = null;
-let detailNoticesUnsub = null;
+detailStatsUnsub = null;
+detailMembersUnsub = null;
+detailRequestsUnsub = null;
+detailActivityUnsub = null;
+detailNoticesUnsub = null;
 let detailCurrentClassroomId = null;
 let detailCurrentClassroomCreatedBy = null;
 
@@ -3070,35 +3135,17 @@ import { createNotification, createBulkNotifications, subscribeNotifications, ma
 
 let currentAssignmentClassId = null;
 let currentQuizClassId = null;
-let assignmentsUnsub = null;
-let quizzesUnsub = null;
-let notesUnsub = null;
-let userClassrooms = [];
 let quizTimer = null;
 let quizTimerSeconds = 0;
 let quizAnswers = [];
 
-let privateChatUnsub = null;
 let privateChatId = null;
 let currentUserOnlineStatus = null;
-let meetingsUnsub = null;
-let globalMeetingsUnsub = null;
 let currentMeetingClassroomId = null;
 let currentMeetingId = null;
-let detailAttendanceUnsub = null;
 let detailAttendanceDate = '';
-let globalAttendanceUnsubs = [];
-let studentHistoryUnsub = null;
-
-// Calendar
-let calendarView = 'month';
-let calendarDate = new Date();
-let calendarEventsCache = [];
-let remindersUnsub = null;
-let selectedCalendarDay = null;
 
 // Notifications
-let notificationsUnsub = null;
 let notificationsCache = [];
 
 // Analytics
@@ -4101,7 +4148,7 @@ function openAttemptHistory(classroomId, quiz, attempt) {
       container.appendChild(entry);
     });
   });
-  document.getElementById('btn-close-attempt').addEventListener('click', () => {
+  document.getElementById('btn-close-attempt')?.addEventListener('click', () => {
     document.getElementById('btn-submit-attempt').style.display = '';
   }, { once: true });
 }
@@ -4214,7 +4261,7 @@ let openReview = function(classroomId, quiz, attempt) {
   document.getElementById('quiz-timer-display').textContent = 'Score: ' + attempt.score + '/' + attempt.total;
   document.getElementById('btn-submit-attempt').style.display = 'none';
   document.getElementById('modal-attempt-quiz').style.display = 'flex';
-  document.getElementById('btn-close-attempt').addEventListener('click', () => { document.getElementById('btn-submit-attempt').style.display = ''; }, { once: true });
+  document.getElementById('btn-close-attempt')?.addEventListener('click', () => { document.getElementById('btn-submit-attempt').style.display = ''; }, { once: true });
 };
 
 // ─── MEETINGS ────────────────────────────────────────────────
@@ -5034,6 +5081,7 @@ document.getElementById('btn-attendance-export')?.addEventListener('click', asyn
 // ═══════════════════════════ CALENDAR ═══════════════════════════
 
 function renderCalendar() {
+  if (typeof calendarView === 'undefined') calendarView = 'month';
   const year = calendarDate.getFullYear();
   const month = calendarDate.getMonth();
   const headerLabel = document.getElementById('calendar-header-label');
@@ -5195,8 +5243,12 @@ function renderDayDetail(date) {
   container.innerHTML = html;
 }
 
-async function loadCalendarEvents() {
-  if (userClassrooms.length === 0) return;
+async function loadCalendarEvents(uid) {
+  if (!Array.isArray(userClassrooms)) userClassrooms = [];
+  const classList = userClassrooms.length
+    ? userClassrooms
+    : (window.currentUserClassrooms && Array.isArray(window.currentUserClassrooms) ? window.currentUserClassrooms : []);
+  if (classList.length === 0) return;
   const year = calendarDate.getFullYear();
   const month = calendarDate.getMonth();
   const startDate = new Date(year, month, 1);
@@ -5204,7 +5256,7 @@ async function loadCalendarEvents() {
 
   try {
     // Fetch from services
-    const classEvents = await fetchCalendarEvents(userClassrooms.map(c => c.classroomId), startDate, endDate);
+    const classEvents = await fetchCalendarEvents(classList.map(c => c.classroomId), startDate, endDate);
 
     // Merge with reminders
     const allEvents = [...classEvents];
@@ -5386,7 +5438,7 @@ function initNotifications(uid) {
   });
 
   // Setup FCM
-  setupFCM(uid);
+  setupFCM(uid).catch(() => {});
   onForegroundMessage((payload) => {
     const title = payload.notification?.title || 'New Notification';
     const body = payload.notification?.body || '';
@@ -5494,7 +5546,11 @@ function hookMeetingNotifications() {
 // Hook into renderClassrooms to init calendar and analytics
 const origRC3 = renderClassrooms;
 renderClassrooms = function(classrooms, errorMsg) {
-  origRC3(classrooms, errorMsg);
+  try {
+    origRC3(classrooms, errorMsg);
+  } catch (err) {
+    console.error('origRC3 base renderClassrooms error:', err);
+  }
   try {
   if (document.getElementById('tab-calendar')) {
     loadCalendarEvents();
@@ -5713,7 +5769,7 @@ document.getElementById('btn-analytics-export-pdf')?.addEventListener('click', (
 
 // ═══════════════════════════ STUDENT REQUESTS ═══════════════════════════
 
-let requestsUnsub = null;
+requestsUnsub = null;
 let requestsFilter = 'pending';
 
 function renderStudentRequests(requests) {
@@ -5980,13 +6036,15 @@ document.querySelectorAll('.nav-menu .nav-item[data-tab]').forEach(item => {
         initMessengerTab(user);
       }
     }
-    // Force-load classrooms when Classrooms tab is activated
+    // Force-load / refresh classrooms when Classrooms tab is activated
     if (tab === 'classrooms') {
       const authUser = getAuth().currentUser;
-      if (authUser && !classroomsUnsubscribe) {
-        console.log('[Nav] Classrooms tab clicked, force-loading classrooms for uid:', authUser.uid);
+      const uid = authUser?.uid || currentUserProfile?.uid || (JSON.parse(localStorage.getItem('openclass_user_profile') || '{}').uid);
+      if (uid) {
+        console.log('[Nav] Classrooms tab clicked, refreshing classrooms for uid:', uid);
         const role = currentUserProfile?.role || localStorage.getItem('openclass_user_role') || 'teacher';
-        classroomsUnsubscribe = subscribeToUserClassrooms(authUser.uid, role, renderClassrooms);
+        if (classroomsUnsubscribe) classroomsUnsubscribe();
+        classroomsUnsubscribe = subscribeToUserClassrooms(uid, role, renderClassrooms);
       }
     }
     if (!checkAccess(tab)) {
@@ -6604,7 +6662,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ─── LIVE MEETINGS DASHBOARD & JITSI VIDEO CALL SDK ──────────────────────
 
-let teacherMeetingsUnsub = null;
+teacherMeetingsUnsub = null;
 let activeMeetingDataList = [];
 
 export function initLiveMeetingsModule(userProfile, userClassroomsPassed = []) {

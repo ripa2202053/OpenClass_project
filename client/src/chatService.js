@@ -109,17 +109,17 @@ export function setTyping(channelId, userId, userName, isTyping) {
   }
 }
 
-export function subscribeTyping(channelId, callback) {
+export function subscribeTyping(channelId, callback = () => {}) {
   return onSnapshot(
     query(collection(getFirestore(), 'channels', channelId, 'typing')),
     (snap) => {
       const typing = snap.docs.map(d => d.data().userName).filter(Boolean);
-      callback(typing);
+      if (typeof callback === 'function') callback(typing);
     }
   );
 }
 
-export function subscribeReadReceipts(channelId, callback) {
+export function subscribeReadReceipts(channelId, callback = () => {}) {
   return onSnapshot(
     query(collection(getFirestore(), 'channels', channelId, 'readReceipts')),
     (snap) => {
@@ -128,15 +128,16 @@ export function subscribeReadReceipts(channelId, callback) {
         const data = d.data();
         receipts[d.id] = { ...data, id: d.id };
       });
-      callback(receipts);
+      if (typeof callback === 'function') callback(receipts);
     }
   );
 }
 
 export async function markRead(channelId, userId, lastMsgId) {
+  if (!channelId || !userId) return;
   const db = getFirestore();
   await setDoc(doc(db, 'channels', channelId, 'readReceipts', userId), {
-    lastReadMsgId: lastMsgId, timestamp: serverTimestamp(),
+    lastReadMsgId: lastMsgId || '', timestamp: serverTimestamp(),
   });
 }
 

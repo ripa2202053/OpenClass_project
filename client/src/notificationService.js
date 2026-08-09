@@ -69,6 +69,10 @@ export async function deleteNotification(notificationId) {
 // ─── FCM ───────────────────────────────────────────────────────
 
 export async function setupFCM(uid) {
+  // Permission permanently blocked → exit gracefully without any token attempt.
+  if (typeof Notification !== 'undefined' && Notification.permission === 'blocked') {
+    return null;
+  }
   try {
     const messaging = getMessaging();
     const token = await getToken(messaging, { vapidKey: 'BGrpDmnMH3_NFyQbX9BJU1d4XGNGSNQFQ9KJBHUHpuUGGPFzxZqgNjOXE6ELEls1wnKWMfsd1_MqK2W_6t6xRPs' });
@@ -78,6 +82,12 @@ export async function setupFCM(uid) {
     }
     return token;
   } catch (e) {
+    const code = (e && (e.code || e.message || '')) || '';
+    // Permission-declined/blocked errors are expected on localhost & strict browsers —
+    // swallow them silently so no uncaught promise rejection is logged.
+    if (/permission-blocked|permission_denied|permission_default|messaging\/(permission|token)/i.test(code)) {
+      return null;
+    }
     console.warn('FCM setup failed:', e);
     return null;
   }

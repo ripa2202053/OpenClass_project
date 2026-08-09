@@ -20,6 +20,14 @@ let typingUnsub = null;
 let typingTimeout = null;
 let isMinimized = false;
 
+// Local inline avatar placeholder — avoids any network request to external hosts.
+const PLACEHOLDER_AVATAR = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">' +
+  '<rect width="100%" height="100%" fill="#3b82f6"/>' +
+  '<text x="50%" y="50%" dy=".35em" fill="#ffffff" font-family="Arial" font-size="16" ' +
+  'text-anchor="middle" font-weight="600">U</text></svg>'
+);
+
 /**
  * Initializes DOM containers for Floating Messenger & Toast Alerts
  */
@@ -35,7 +43,7 @@ function ensureDOMContainers() {
         <div class="floating-messenger-header" id="floating-header-click">
           <div class="floating-user-info">
             <div class="floating-avatar-wrap">
-              <img id="floating-target-avatar" class="floating-avatar-img" src="https://via.placeholder.com/40" alt="Avatar" />
+              <img id="floating-target-avatar" class="floating-avatar-img" src="${PLACEHOLDER_AVATAR}" alt="Avatar" />
               <span id="floating-target-presence" class="presence-dot"></span>
             </div>
             <div class="floating-user-details">
@@ -163,7 +171,7 @@ export async function openFloatingMessenger(targetUser) {
   if (icon) icon.textContent = 'remove';
   box.classList.remove('hidden', 'minimized');
 
-  avatarEl.src = sanitizeProfilePhotoUrl(targetUser.photoURL || targetUser.photo || '', targetUser) || 'https://via.placeholder.com/40';
+  avatarEl.src = sanitizeProfilePhotoUrl(targetUser.photoURL || targetUser.photo || '', targetUser) || PLACEHOLDER_AVATAR;
   nameEl.textContent = targetUser.displayName || targetUser.name || 'User';
   avatarEl.onerror = () => {
     avatarEl.onerror = null;
@@ -300,7 +308,7 @@ export function showChatToastAlert(senderInfo, messageText, onReplyClick) {
   const toast = document.createElement('div');
   toast.className = 'chat-toast';
 
-  const avatar = sanitizeProfilePhotoUrl(senderInfo.photoURL || senderInfo.photo || '', senderInfo) || 'https://via.placeholder.com/40';
+  const avatar = sanitizeProfilePhotoUrl(senderInfo.photoURL || senderInfo.photo || '', senderInfo) || PLACEHOLDER_AVATAR;
   const name = senderInfo.displayName || senderInfo.name || 'User';
 
   toast.innerHTML = `
