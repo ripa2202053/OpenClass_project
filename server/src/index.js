@@ -24,21 +24,35 @@ const __dirname = path.dirname(__filename);
 
 // Initialize Firebase Admin
 if (!getApps().length) {
-  const keyPath = path.resolve(__dirname, '../serviceAccountKey.json');
-  if (fs.existsSync(keyPath)) {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     try {
-      const serviceAccount = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
       initializeApp({
         credential: cert(serviceAccount)
       });
-      console.log('Firebase Admin initialized with serviceAccountKey.json');
+      console.log('Firebase Admin initialized from environment variable');
     } catch (err) {
-      console.warn('Error reading serviceAccountKey.json, using fallback config:', err.message);
-      initializeApp({ projectId: 'openclass-7889d' });
+      console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT environment variable:', err.message);
+      throw err;
     }
   } else {
-    initializeApp({ projectId: 'openclass-7889d' });
-    console.log('Firebase Admin initialized with default project openclass-7889d');
+    const keyPath = path.resolve(__dirname, '../serviceAccountKey.json');
+    if (fs.existsSync(keyPath)) {
+      try {
+        const serviceAccount = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+        initializeApp({
+          credential: cert(serviceAccount)
+        });
+        console.log('Firebase Admin initialized with serviceAccountKey.json');
+      } catch (err) {
+        console.error('Failed to read or parse serviceAccountKey.json:', err.message);
+        throw err;
+      }
+    } else {
+      const errorMsg = 'Firebase Admin initialization failed: Neither FIREBASE_SERVICE_ACCOUNT environment variable nor server/serviceAccountKey.json file was found.';
+      console.error(errorMsg);
+      throw new Error(errorMsg);
+    }
   }
 }
 

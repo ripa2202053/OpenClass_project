@@ -1,11 +1,18 @@
 node_modules/
 dist/
 .env
+.env.*
 *.log
 .DS_Store
 client-archive/
 server-archive/
 
+serviceAccountKey.json
+**/serviceAccountKey.json
 server/serviceAccountKey.json
 
-server/serviceAccountKey.json
+**/serviceAccountKey.json
+**/serviceAccountKey.json.json
+.env
+.env.*
+node_modules/
