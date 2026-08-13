@@ -6,6 +6,19 @@ function isImageBelowMaxSize(maxSizeMB) {
 
 service firebase.storage {
   match /b/{bucket}/o {
+
+    // Look up classroom ownership / membership for the storage rules below.
+    function isClassroomCreator(classroomId) {
+      let data = get(/databases/(default)/documents/classrooms/$(classroomId)).data;
+      return data.createdBy == request.auth.uid
+        || data.teacherId == request.auth.uid
+        || data.teacherUid == request.auth.uid
+        || data.ownerId == request.auth.uid;
+    }
+    function isClassroomMember(classroomId) {
+      return exists(/databases/(default)/documents/classrooms/$(classroomId)/members/$(request.auth.uid));
+    }
+
     match /profile_pics/{userId}/{fileName} {
       allow write: if request.auth != null && request.auth.uid == userId && isImageBelowMaxSize(5);
       allow read;
@@ -13,6 +26,10 @@ service firebase.storage {
     match /{userId}/{messageId}/{fileName} {
       allow write: if request.auth != null && request.auth.uid == userId && isImageBelowMaxSize(5);
       allow read;
+    }
+    match /classrooms/{classroomId}/files/{fileId}/{fileName} {
+      allow read: if request.auth != null && (isClassroomCreator(classroomId) || isClassroomMember(classroomId));
+      allow write, delete: if request.auth != null && isClassroomCreator(classroomId);
     }
   }
 }

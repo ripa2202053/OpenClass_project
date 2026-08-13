@@ -17,7 +17,7 @@ export function isMeetingOpen() {
  * `container` + `inline` are provided, into an existing DOM container so
  * the meeting lives inside the SPA's workspace (e.g. classroom detail).
  */
-export function openInAppMeeting({ roomName, userName, title, inviteLink, onClosed, container, inline } = {}) {
+export function openInAppMeeting({ roomName, userName, token, meetingId, classroomId, title, inviteLink, onClosed, container, inline } = {}) {
   if (hostEl) return;
 
   inlineMode = !!inline;
@@ -37,6 +37,9 @@ export function openInAppMeeting({ roomName, userName, title, inviteLink, onClos
     <MeetingRoom
       roomId={roomName}
       userName={userName}
+      token={token}
+      meetingId={meetingId}
+      classroomId={classroomId}
       title={title}
       inviteLink={inviteLink}
       inline={inlineMode}

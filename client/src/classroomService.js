@@ -161,6 +161,8 @@ export async function createClassroom(data, user) {
     coverImageUrl,
     createdBy: user.uid,
     teacherId: user.uid,
+    teacherUid: user.uid,
+    ownerId: user.uid,
     teacherPhotoURL: user.photoURL || '',
     createdAt: serverTimestamp(),
     createdDate: new Date().toISOString(),
@@ -437,10 +439,11 @@ export async function getJoinRequests(classroomId) {
   const db = getFirestore();
   const snap = await getDocs(query(
     collection(db, 'classrooms', classroomId, 'joinRequests'),
-    where('status', '==', 'pending'),
-    orderBy('requestedAt', 'desc')
+    where('status', '==', 'pending')
   ));
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => (b.requestedAt?.seconds || 0) - (a.requestedAt?.seconds || 0));
 }
 
 export async function approveMember(classroomId, memberUid, user) {
@@ -703,12 +706,20 @@ export function subscribeToUserClassrooms(uid, userRole, callback = () => {}) {
           const data = d.data();
           if (data.isDeleted === true || data.isActive === false) return;
 
-          let isMatch = isTeacherRole;
+          let isMatch = false;
 
-          if (!isMatch) {
-            for (const uId of targetUids) {
-              if (data.createdBy === uId || data.teacherId === uId) { isMatch = true; break; }
-              if (Array.isArray(data.members) && data.members.includes(uId)) { isMatch = true; break; }
+          for (const uId of targetUids) {
+            if (data.createdBy === uId || data.teacherId === uId || data.teacherUid === uId || data.ownerId === uId) {
+              isMatch = true;
+              break;
+            }
+            if (Array.isArray(data.enrolledStudents) && data.enrolledStudents.includes(uId)) {
+              isMatch = true;
+              break;
+            }
+            if (Array.isArray(data.members) && data.members.includes(uId)) {
+              isMatch = true;
+              break;
             }
           }
 

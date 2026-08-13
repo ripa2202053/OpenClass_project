@@ -37,6 +37,8 @@ router.post('/', verifyAuthToken, async (req, res) => {
       coverImageUrl: coverImageUrl || '',
       createdBy: user.uid,
       teacherId: user.uid,
+      teacherUid: user.uid,
+      ownerId: user.uid,
       teacherName: user.name || user.displayName || user.email || 'Teacher',
       teacherPhoto: user.picture || user.photoURL || '',
       createdAt: FieldValue.serverTimestamp(),
@@ -83,20 +85,75 @@ router.get('/', verifyAuthToken, async (req, res) => {
   try {
     const db = getFirestore();
     const uid = req.user.uid;
-
-    const snapshot = await db.collection('classrooms')
-      .where('isActive', '==', true)
-      .get();
+    const isTeacher = (req.user.role || '').toLowerCase() === 'teacher' || (req.user.role || '').toLowerCase() === 'admin';
 
     const classrooms = [];
-    for (const doc of snapshot.docs) {
-      const data = doc.data();
-      if (data.createdBy === uid || data.teacherId === uid) {
-        classrooms.push({ id: doc.id, ...data });
-      } else {
-        const memberSnap = await db.collection('classrooms').doc(doc.id).collection('members').doc(uid).get();
-        if (memberSnap.exists) {
-          classrooms.push({ id: doc.id, ...data, memberData: memberSnap.data() });
+    const seenIds = new Set();
+
+    if (isTeacher) {
+      // Query at DB level specifically for classrooms created by this teacher
+      const createdSnap = await db.collection('classrooms')
+        .where('isActive', '==', true)
+        .where('createdBy', '==', uid)
+        .get();
+
+      for (const doc of createdSnap.docs) {
+        seenIds.add(doc.id);
+        classrooms.push({ id: doc.id, ...doc.data() });
+      }
+
+      // Also check fallback teacherId/teacherUid/ownerId fields at DB level
+      const teacherIdSnap = await db.collection('classrooms')
+        .where('isActive', '==', true)
+        .where('teacherId', '==', uid)
+        .get();
+
+      for (const doc of teacherIdSnap.docs) {
+        if (!seenIds.has(doc.id)) {
+          seenIds.add(doc.id);
+          classrooms.push({ id: doc.id, ...doc.data() });
+        }
+      }
+    } else {
+      // For student users, query classrooms where created or enrolled
+      const createdSnap = await db.collection('classrooms')
+        .where('isActive', '==', true)
+        .where('createdBy', '==', uid)
+        .get();
+
+      for (const doc of createdSnap.docs) {
+        seenIds.add(doc.id);
+        classrooms.push({ id: doc.id, ...doc.data() });
+      }
+
+      const enrolledSnap = await db.collection('classrooms')
+        .where('isActive', '==', true)
+        .where('enrolledStudents', 'array-contains', uid)
+        .get();
+
+      for (const doc of enrolledSnap.docs) {
+        if (!seenIds.has(doc.id)) {
+          seenIds.add(doc.id);
+          classrooms.push({ id: doc.id, ...doc.data() });
+        }
+      }
+
+      const allActiveSnap = await db.collection('classrooms')
+        .where('isActive', '==', true)
+        .get();
+
+      for (const doc of allActiveSnap.docs) {
+        if (seenIds.has(doc.id)) continue;
+        const data = doc.data();
+        if (data.createdBy === uid || data.teacherId === uid || data.ownerId === uid || data.teacherUid === uid) {
+          seenIds.add(doc.id);
+          classrooms.push({ id: doc.id, ...data });
+        } else {
+          const memberSnap = await db.collection('classrooms').doc(doc.id).collection('members').doc(uid).get();
+          if (memberSnap.exists && memberSnap.data().approved !== false) {
+            seenIds.add(doc.id);
+            classrooms.push({ id: doc.id, ...data, memberData: memberSnap.data() });
+          }
         }
       }
     }
@@ -367,10 +424,15 @@ router.get('/:id/requests', verifyAuthToken, async (req, res) => {
 
     const reqSnap = await classRef.collection('joinRequests')
       .where('status', '==', 'pending')
-      .orderBy('requestedAt', 'desc')
       .get();
 
-    const requests = reqSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const requests = reqSnap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => {
+        const tA = a.requestedAt?.seconds || 0;
+        const tB = b.requestedAt?.seconds || 0;
+        return tB - tA;
+      });
     return res.json({ requests, count: requests.length });
   } catch (error) {
     console.error('Error fetching join requests:', error);

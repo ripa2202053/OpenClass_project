@@ -124,6 +124,74 @@ let userClassrooms = [];
 let calendarDate = new Date();
 let calendarView = 'month';
 
+export async function fetchWithAuth(url, options = {}) {
+  const user = getAuth().currentUser;
+  let token = '';
+  if (user) {
+    try {
+      token = await user.getIdToken();
+    } catch (e) {
+      console.warn('Could not retrieve Firebase ID token:', e);
+    }
+  }
+  const headers = {
+    ...(options.headers || {}),
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  let res;
+  try {
+    res = await fetch(url, { ...options, headers });
+  } catch (fetchErr) {
+    throw new Error('Network error: Cannot reach the server. Make sure the backend is running on port 5000 and your connection is active.');
+  }
+  if (!res.ok) {
+    let errMsg = `Request failed with status ${res.status}`;
+    try {
+      const errJson = await res.json();
+      if (errJson.error) errMsg = errJson.error;
+    } catch (e) {}
+    throw new Error(errMsg);
+  }
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return await res.json();
+  }
+  return await res.text();
+}
+
+// Like fetchWithAuth but returns a Blob, so authenticated downloads of binary
+// files work (a plain <a href>/window.open cannot attach the Bearer token).
+async function fetchWithAuthBlob(url, options = {}) {
+  const user = getAuth().currentUser;
+  let token = '';
+  if (user) {
+    try {
+      token = await user.getIdToken();
+    } catch (e) {
+      console.warn('Could not retrieve Firebase ID token:', e);
+    }
+  }
+  const headers = { ...(options.headers || {}) };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  let res;
+  try {
+    res = await fetch(url, { ...options, headers });
+  } catch (fetchErr) {
+    throw new Error('Network error: Cannot reach the server. Make sure the backend is running on port 5000 and your connection is active.');
+  }
+  if (!res.ok) {
+    let errMsg = `Request failed with status ${res.status}`;
+    try {
+      const errJson = await res.json();
+      if (errJson.error) errMsg = errJson.error;
+    } catch (e) {}
+    throw new Error(errMsg);
+  }
+  return await res.blob();
+}
+
 async function signIn() {
   try {
     const provider = new GoogleAuthProvider();
@@ -3763,7 +3831,11 @@ document.getElementById('btn-upload-note')?.addEventListener('click', () => {
     return;
   }
   document.getElementById('note-upload-alert').style.display = 'none';
-  document.getElementById('modal-note-upload').style.display = 'flex';
+  const noteModal = document.getElementById('modal-note-upload');
+  if (noteModal) {
+    noteModal.style.zIndex = '1000000';
+    noteModal.style.display = 'flex';
+  }
 });
 
 document.getElementById('form-note-upload')?.addEventListener('submit', async (e) => {
@@ -4347,9 +4419,19 @@ function renderMeetingCard(meeting, isCreatorView) {
         </div>
       </div>
     </div>
-    <div class="meeting-card-right">
+    <div class="meeting-card-right" style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
       <span class="badge-status ${statusClass}">${statusLabel}</span>
-      ${!isEnded ? `<button class="btn btn-primary join-meeting-btn" style="padding:6px 14px;font-size:13px;" data-id="${meeting.id}" data-link="${meeting.meetingLink}" data-title="${meeting.title}" data-status="${meeting.status}" data-creator="${meeting.createdBy}"><i class="material-icons" style="font-size:16px;">videocam</i> Join</button>` : ''}
+      ${!isEnded ? `<button class="btn btn-primary join-meeting-btn" style="padding:6px 14px;font-size:13px;" data-id="${meeting.id}" data-classroom="${meeting.classroomId}" data-link="${meeting.meetingLink}" data-title="${meeting.title}" data-status="${meeting.status}" data-creator="${meeting.createdBy}"><i class="material-icons" style="font-size:16px;">videocam</i> Join</button>` : ''}
+      ${isEnded && isCreatorView ? `
+        <button class="btn btn-sm btn-outline export-attendance-btn" style="padding:4px 10px;font-size:11px;" data-id="${meeting.id}" data-classroom="${meeting.classroomId}"><i class="material-icons" style="font-size:14px;">download</i> Attendance CSV</button>
+      ` : ''}
+      ${isEnded ? `
+        <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">
+          <button class="btn btn-sm btn-outline view-chat-btn" style="padding:4px 8px;font-size:11px;" data-id="${meeting.id}" data-classroom="${meeting.classroomId}"><i class="material-icons" style="font-size:14px;">chat</i> Chat</button>
+          <button class="btn btn-sm btn-outline view-notes-btn" style="padding:4px 8px;font-size:11px;" data-id="${meeting.id}" data-classroom="${meeting.classroomId}"><i class="material-icons" style="font-size:14px;">description</i> Notes</button>
+          <button class="btn btn-sm btn-outline view-resources-btn" style="padding:4px 8px;font-size:11px;" data-id="${meeting.id}" data-classroom="${meeting.classroomId}"><i class="material-icons" style="font-size:14px;">link</i> Resources</button>
+        </div>
+      ` : ''}
     </div>`;
   return card;
 }
@@ -4368,18 +4450,133 @@ function renderMeetings(meetings, containerId, isCreatorView) {
   });
   container.querySelectorAll('.join-meeting-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      openMeetingRoom(btn.dataset.id, btn.dataset.link, btn.dataset.title, btn.dataset.status, btn.dataset.creator);
+      openMeetingRoom(btn.dataset.id, btn.dataset.link, btn.dataset.title, btn.dataset.status, btn.dataset.creator, btn.dataset.classroom);
+    });
+  });
+  container.querySelectorAll('.export-attendance-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const classId = btn.dataset.classroom || detailCurrentClassroomId;
+      const meetingId = btn.dataset.id;
+      if (!classId || !meetingId) return;
+      try {
+        const csvData = await fetchWithAuth(`/api/classrooms/${classId}/meetings/${meetingId}/attendance?format=csv`);
+        const blob = new Blob([csvData], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Attendance_${classId}_${meetingId}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch (err) {
+        alert('Failed to export attendance CSV: ' + err.message);
+      }
+    });
+  });
+  container.querySelectorAll('.view-chat-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const classId = btn.dataset.classroom || detailCurrentClassroomId;
+      const meetingId = btn.dataset.id;
+      if (!classId || !meetingId) return;
+      try {
+        const msgs = await fetchWithAuth(`/api/classrooms/${classId}/meetings/${meetingId}/messages`);
+        if (!msgs || msgs.length === 0) {
+          alert('No chat messages recorded for this meeting.');
+          return;
+        }
+        const textList = msgs.map(m => `[${new Date(m.createdAt || m.timestamp).toLocaleTimeString()}] ${m.senderName} (${m.senderRole}): ${m.isDeleted ? '[Message Deleted]' : (m.message || m.text)}${m.isQuestion ? ' [QUESTION]' : ''}`).join('\n');
+        alert(`=== LIVE CLASS CHAT & Q&A HISTORY ===\n\n${textList}`);
+      } catch (err) {
+        alert('Failed to fetch chat history: ' + err.message);
+      }
+    });
+  });
+  container.querySelectorAll('.view-notes-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const classId = btn.dataset.classroom || detailCurrentClassroomId;
+      const meetingId = btn.dataset.id;
+      if (!classId || !meetingId) return;
+      try {
+        const notes = await fetchWithAuth(`/api/classrooms/${classId}/meetings/${meetingId}/notes`);
+        if (!notes || notes.length === 0) {
+          alert('No notes added for this class.');
+          return;
+        }
+        const textList = notes.map(n => `[${n.title}]\n${n.content || ''}\n(By: ${n.createdByName})`).join('\n\n---\n\n');
+        alert(`=== LIVE CLASS NOTES ===\n\n${textList}`);
+      } catch (err) {
+        alert('Failed to fetch notes: ' + err.message);
+      }
+    });
+  });
+  container.querySelectorAll('.view-resources-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const classId = btn.dataset.classroom || detailCurrentClassroomId;
+      const meetingId = btn.dataset.id;
+      if (!classId || !meetingId) return;
+      try {
+        const resources = await fetchWithAuth(`/api/classrooms/${classId}/meetings/${meetingId}/resources`);
+        if (!resources || resources.length === 0) {
+          alert('No resources attached for this class.');
+          return;
+        }
+        const textList = resources.map(r => `• ${r.title} (${r.fileType}): ${r.url || 'No URL'}`).join('\n');
+        alert(`=== LIVE CLASS RESOURCES ===\n\n${textList}`);
+      } catch (err) {
+        alert('Failed to fetch resources: ' + err.message);
+      }
     });
   });
 }
 
-function openMeetingRoom(meetingId, meetingLink, title, status, creatorUid) {
+async function openMeetingRoom(meetingId, meetingLink, title, status, creatorUid, classroomId) {
   if (status === 'ended' || status === 'cancelled') {
     showAppToast('This meeting has ended.', 'info');
     return;
   }
+  const profile = currentUserProfile;
+  if (!profile || !profile.uid) {
+    alert('Sign in required to join live class.');
+    return;
+  }
+  const isTeacherUser = isTeacher(profile);
+  const isCreatorUser = creatorUid && profile.uid === creatorUid;
+  if (!isTeacherUser && !isCreatorUser && status === 'scheduled') {
+    showAppToast('This class has not been started by the teacher yet. Please wait for your instructor.', 'info');
+    return;
+  }
+  if (classroomId) {
+    const targetClassroom = userClassrooms.find(c => (c.id || c.classroomId) === classroomId);
+    const isOwner = targetClassroom && (
+      targetClassroom.createdBy === profile.uid ||
+      targetClassroom.teacherId === profile.uid ||
+      targetClassroom.teacherUid === profile.uid ||
+      targetClassroom.ownerId === profile.uid
+    );
+    const isMember = targetClassroom && (
+      isOwner ||
+      (Array.isArray(targetClassroom.enrolledStudents) && targetClassroom.enrolledStudents.includes(profile.uid)) ||
+      (targetClassroom.memberData && targetClassroom.memberData.approved !== false)
+    );
+    if (!targetClassroom || (!isOwner && !isMember)) {
+      alert('Access Denied: You must be an approved member of this classroom to join this live class.');
+      return;
+    }
+  }
+
+  const auth = getAuth();
+  let token = null;
+  if (auth.currentUser) {
+    try {
+      token = await auth.currentUser.getIdToken();
+    } catch (e) {}
+  }
+
   openInAppMeeting({
     id: meetingId,
+    meetingId,
+    classroomId,
+    token,
     title: title || 'OpenClass Live Meeting',
     roomName: extractRoomNameFromLink(meetingLink, `OpenClass-${meetingId}`),
     meetingLink,
@@ -4440,15 +4637,54 @@ function closeClassroomMeeting() {
   if (content) content.style.display = '';
 }
 
-function openClassroomMeetingInline(meeting, classId, userProfile) {
+async function openClassroomMeetingInline(meeting, classId, userProfile) {
   if (isMeetingOpen()) return;
+  const profile = userProfile || currentUserProfile;
+  if (!profile || !profile.uid) {
+    alert('Sign in required to join live class.');
+    return;
+  }
+
+  const targetClassroom = userClassrooms.find(c => (c.id || c.classroomId) === classId);
+  const isOwner = targetClassroom && (
+    targetClassroom.createdBy === profile.uid ||
+    targetClassroom.teacherId === profile.uid ||
+    targetClassroom.teacherUid === profile.uid ||
+    targetClassroom.ownerId === profile.uid
+  );
+  const isMember = targetClassroom && (
+    isOwner ||
+    (Array.isArray(targetClassroom.enrolledStudents) && targetClassroom.enrolledStudents.includes(profile.uid)) ||
+    (targetClassroom.memberData && targetClassroom.memberData.approved !== false)
+  );
+
+  if (!targetClassroom || (!isOwner && !isMember)) {
+    alert('Access Denied: You must be an approved member of this classroom to join this live class.');
+    return;
+  }
+
+  const isTeacherUser = profile && isTeacher(profile);
+  if (!isOwner && !isTeacherUser && meeting.status === 'scheduled') {
+    showAppToast('This class has not been started by the teacher yet. Please wait for your instructor.', 'info');
+    return;
+  }
+
+  // Switch workspace tab to meetings so the meeting host container becomes active and visible
+  if (typeof switchDetailTab === 'function') {
+    switchDetailTab('meetings');
+  }
+
   const container = document.getElementById('classroom-meeting-host');
   if (!container) return;
-  const profile = userProfile || currentUserProfile;
-  const roomName =
-    meeting.roomName && meeting.roomName !== 'false' && meeting.roomName !== 'null'
-      ? meeting.roomName
-      : classroomMeetingRoom(classId);
+  const roomName = meeting && meeting.roomName && meeting.roomName !== 'false' && meeting.roomName !== 'null'
+    ? meeting.roomName
+    : null;
+
+  if (!roomName) {
+    alert('Meeting room name is unavailable. Please try launching again.');
+    return;
+  }
+
   const emptyState = document.getElementById('detail-meetings-empty-state');
   const content = document.getElementById('detail-meetings-content');
 
@@ -4456,9 +4692,20 @@ function openClassroomMeetingInline(meeting, classId, userProfile) {
   if (emptyState) emptyState.style.display = 'none';
   if (content) content.style.display = 'none';
 
+  const auth = getAuth();
+  let token = null;
+  if (auth.currentUser) {
+    try {
+      token = await auth.currentUser.getIdToken();
+    } catch (e) {}
+  }
+
   mountMeetingUi({
     roomName,
     userName: (profile && (profile.displayName || profile.email)) || 'Guest',
+    token,
+    meetingId: meeting.id,
+    classroomId: classId,
     title: meeting.title || 'OpenClass Live Meeting',
     inviteLink: buildLocalMeetingLink(roomName),
     inline: true,
@@ -4476,14 +4723,28 @@ function startClassroomInstantMeeting() {
   const classId = detailCurrentClassroomId;
   if (!classId) { alert('No classroom selected.'); return; }
   if (isMeetingOpen()) { showAppToast('A meeting is already open in this window.', 'info'); return; }
-  const classroom = userClassrooms.find((c) => c.classroomId === classId);
-  openClassroomMeetingInline({
-    title: (classroom ? classroom.classroomName : 'Classroom') + ' — Live Session',
-    classroomName: classroom ? classroom.classroomName : 'Classroom',
-    roomName: classroomMeetingRoom(classId),
-    status: 'ongoing',
+  const classroom = userClassrooms.find((c) => c.classroomId === classId || c.id === classId);
+  const classroomName = classroom ? classroom.classroomName : 'Classroom';
+  const title = `${classroomName} — Live Session`;
+
+  createMeeting({
+    title,
+    classroomId: classId,
+    classroomName,
     createdBy: currentUserProfile.uid,
-  }, classId, currentUserProfile);
+    teacherName: currentUserProfile.displayName || currentUserProfile.name || 'Teacher',
+    meetingType: 'instant',
+    status: 'ongoing',
+    notifyStudents: true,
+  }).then(meeting => {
+    if (!meeting || !meeting.roomName) {
+      throw new Error('Failed to retrieve persisted meeting room identifier.');
+    }
+    openClassroomMeetingInline(meeting, classId, currentUserProfile);
+  }).catch(err => {
+    console.error('Failed to create instant live class:', err);
+    alert('Failed to start Live Class: ' + (err.message || 'Could not persist meeting session.'));
+  });
 }
 
 // Detail + New Meeting / Instant Meeting → start embedded meeting in-workspace
@@ -4509,10 +4770,52 @@ function subscribeDetailMeetings(classroomId) {
   });
 }
 
+function renderStreamLiveBanner(ongoingMeeting, classroomId) {
+  const streamMain = document.querySelector('#detail-panel-stream .gc-stream-main') || document.getElementById('detail-panel-stream');
+  if (!streamMain) return;
+
+  let banner = document.getElementById('classroom-stream-live-banner');
+
+  if (!ongoingMeeting) {
+    if (banner) banner.remove();
+    return;
+  }
+
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'classroom-stream-live-banner';
+    streamMain.insertBefore(banner, streamMain.firstChild);
+  }
+
+  banner.className = 'alert alert-danger';
+  banner.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:16px 22px; background:linear-gradient(135deg, #DC2626 0%, #991B1B 100%); color:#fff; border-radius:14px; margin-bottom:24px; box-shadow:0 6px 18px rgba(220,38,38,0.45); border:none;';
+  banner.innerHTML = `
+    <div style="display:flex; align-items:center; gap:14px;">
+      <span style="width:14px; height:14px; border-radius:50%; background:#fff; display:inline-block; box-shadow:0 0 12px #fff;"></span>
+      <div>
+        <div style="font-weight:800; font-size:16px; text-transform:uppercase; letter-spacing:0.5px; color:#fff; margin-bottom:2px;">🔴 LIVE CLASS IN PROGRESS</div>
+        <div style="font-size:13px; color:rgba(255,255,255,0.92); font-weight:500;">${ongoingMeeting.title || 'Live Session'} &bull; Instructor: ${ongoingMeeting.teacherName || ongoingMeeting.createdByName || 'Teacher'}</div>
+      </div>
+    </div>
+    <button class="btn btn-join-stream-banner-action" style="background:#ffffff; color:#DC2626; font-weight:800; font-size:14px; padding:10px 22px; border-radius:10px; border:none; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.2);">
+      <i class="material-icons" style="font-size:20px; vertical-align:middle; margin-right:6px;">videocam</i> JOIN LIVE CLASS
+    </button>
+  `;
+
+  banner.querySelector('.btn-join-stream-banner-action')?.addEventListener('click', () => {
+    openInAppMeeting(ongoingMeeting, currentUserProfile);
+  });
+}
+
 /**
  * Renders full meeting features inside Classroom Detail Modal (Meetings Tab)
  */
 function renderClassroomDetailMeetings(meetings = [], classroomId) {
+  const ongoing = (meetings || []).find(m => m.status === 'ongoing' || m.status === 'active' || m.status === 'live');
+  
+  // Render Stream Tab Banner whenever an ongoing meeting exists
+  renderStreamLiveBanner(ongoing, classroomId);
+
   if (activeClassroomMeeting) return;
   const emptyStateEl = document.getElementById('detail-meetings-empty-state');
   const ongoingWrapper = document.getElementById('detail-meetings-ongoing-wrapper');
@@ -4531,9 +4834,8 @@ function renderClassroomDetailMeetings(meetings = [], classroomId) {
   if (emptyStateEl) emptyStateEl.style.display = 'none';
 
   const isUserTeacher = currentUserProfile && isTeacher(currentUserProfile);
-  const ongoing = meetings.find(m => m.status === 'ongoing');
   const upcoming = meetings.filter(m => m.status === 'scheduled');
-  const past = meetings.filter(m => m.status === 'ended');
+  const past = meetings.filter(m => m.status === 'ended' || m.status === 'cancelled');
 
   // Section A: Ongoing Meeting
   if (ongoing && ongoingWrapper && ongoingCard) {
@@ -4542,14 +4844,14 @@ function renderClassroomDetailMeetings(meetings = [], classroomId) {
     ongoingCard.innerHTML = `
       <div>
         <div style="font-size:16px; font-weight:700; color:var(--text-main); margin-bottom:4px;">${ongoing.title}</div>
-        <div style="font-size:12px; color:var(--text-muted);">${ongoing.classroomName} &bull; Instructor: ${ongoing.teacherName}</div>
+        <div style="font-size:12px; color:var(--text-muted);">${ongoing.classroomName || 'Classroom'} &bull; Instructor: ${ongoing.teacherName || ongoing.createdByName || 'Teacher'}</div>
         <div style="margin-top:8px; font-size:12px; color:var(--success); font-weight:600; display:flex; align-items:center; gap:6px;">
           <i class="material-icons" style="font-size:15px;">people</i> ${participantCount} Active Participants Joined
         </div>
       </div>
       <div style="display:flex; gap:8px;">
-        <button class="btn btn-primary btn-rejoin-detail-meeting" style="padding:6px 14px; font-size:12px;">
-          <i class="material-icons" style="font-size:15px; margin-right:4px;">videocam</i> Re-join Class
+        <button class="btn btn-primary btn-rejoin-detail-meeting" style="padding:8px 16px; font-size:13px; font-weight:700; background:#DC2626; border:none;">
+          <i class="material-icons" style="font-size:16px; margin-right:4px;">videocam</i> ${isUserTeacher ? 'Re-join Class' : 'JOIN LIVE CLASS NOW'}
         </button>
         ${isUserTeacher ? `
           <button class="btn btn-outline btn-end-detail-meeting" style="color:#EF4444; border-color:#EF4444; padding:6px 12px; font-size:12px;">
@@ -4565,7 +4867,7 @@ function renderClassroomDetailMeetings(meetings = [], classroomId) {
 
     ongoingCard.querySelector('.btn-end-detail-meeting')?.addEventListener('click', async () => {
       if (!confirm('Are you sure you want to end this live meeting for all students?')) return;
-      await updateMeetingStatus(ongoing.id, 'ended');
+      await updateMeetingStatus(ongoing.id, 'ended', classroomId);
     });
   } else if (ongoingWrapper) {
     ongoingWrapper.style.display = 'none';
@@ -4598,15 +4900,21 @@ function renderClassroomDetailMeetings(meetings = [], classroomId) {
             <div>
               <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
                 <span class="countdown-badge">🕒 ${countdownText}</span>
-                <span style="font-size:11px; color:var(--text-muted);">${m.classroomName}</span>
+                <span style="font-size:11px; color:var(--text-muted);">${m.classroomName || 'General Class'}</span>
               </div>
               <h4 style="font-size:14px; font-weight:700; margin:0 0 4px 0; color:var(--text-main);">${m.title}</h4>
               <div style="font-size:11px; color:var(--text-muted);"><i class="material-icons" style="font-size:13px; vertical-align:middle;">event</i> ${timeStr}</div>
             </div>
-            <div style="display:flex; gap:8px; margin-top:12px;">
-              <button class="btn btn-primary btn-start-detail-scheduled" data-meeting-id="${m.id}" style="flex:1; font-size:11px; padding:5px 10px;">
-                <i class="material-icons" style="font-size:13px; margin-right:2px;">play_arrow</i> Start Class
-              </button>
+            <div style="display:flex; gap:8px; margin-top:12px; align-items:center;">
+              ${isUserTeacher ? `
+                <button class="btn btn-primary btn-start-detail-scheduled" data-meeting-id="${m.id}" style="flex:1; font-size:11px; padding:5px 10px;">
+                  <i class="material-icons" style="font-size:13px; margin-right:2px;">play_arrow</i> Start Class
+                </button>
+              ` : `
+                <span class="badge-status bg-warning-dim" style="font-size:11px; padding:6px 12px; font-weight:600; flex:1; text-align:center;">
+                  🕒 Scheduled &bull; Waiting for teacher
+                </span>
+              `}
               <button class="btn btn-outline btn-copy-detail-link" data-link="${m.meetingLink}" style="font-size:11px; padding:5px 8px;" title="Copy Meeting Link">
                 <i class="material-icons" style="font-size:13px;">content_copy</i>
               </button>
@@ -4620,8 +4928,8 @@ function renderClassroomDetailMeetings(meetings = [], classroomId) {
           const mId = btn.dataset.meetingId;
           const targetMeeting = upcoming.find(item => item.id === mId);
           if (targetMeeting) {
-            await updateMeetingStatus(mId, 'ongoing');
-            openInAppMeeting(targetMeeting, currentUserProfile);
+            await updateMeetingStatus(mId, 'ongoing', classroomId);
+            openInAppMeeting({ ...targetMeeting, status: 'ongoing' }, currentUserProfile);
           }
         };
       });
@@ -6030,14 +6338,12 @@ function filterTeacherRequests(requests, teacherUid) {
   const ownedClassroomIds = getOwnedClassroomIds(teacherUid);
   const matched = requests.filter(r => {
     const classId = r.classId || r.classroomId;
-    // Direct ownership fallback: the request explicitly names this teacher.
-    const directMatch = r.teacherUid === teacherUid || r.ownerId === teacherUid;
+    const directMatch = r.teacherUid === teacherUid || r.ownerId === teacherUid || r.teacherId === teacherUid;
+    if (directMatch) return true;
     if (ownedClassroomIds.size > 0 && classId) {
-      return ownedClassroomIds.has(classId) || directMatch;
+      return ownedClassroomIds.has(classId);
     }
-    // No owned classrooms known yet (userClassrooms not loaded) — fall back to
-    // direct ownership fields plus a lenient match so nothing is hidden.
-    return directMatch || !r.teacherUid;
+    return false;
   });
   console.log('[DEBUG] Total classroomRequests in snapshot:', requests.length, 'Matched for Teacher:', matched.length);
   return matched;
@@ -7135,5 +7441,445 @@ export async function openInAppMeeting(meeting, userProfile) {
     }
   }
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// CLASSROOM FILE UPLOAD & RESOURCE SHARING MODULE
+// ══════════════════════════════════════════════════════════════════════════
+
+let classroomFilesCache = [];
+let filesSocketBound = false;
+
+// The realtime file broadcast socket is not wired up in the app yet (no global
+// socket connection exists outside of meetings). Return a socket if one is ever
+// registered, otherwise null so callers can safely skip the (optional) emit.
+function getSocket() {
+  if (typeof window !== 'undefined' && window.__openClassSocket) {
+    return window.__openClassSocket;
+  }
+  return null;
+}
+
+// Translate raw fetch/API errors into user-friendly, non-sensitive messages.
+function describeApiError(err) {
+  const msg = (err && err.message) ? String(err.message) : 'Unexpected error.';
+  const lower = msg.toLowerCase();
+  if (lower.includes('failed to fetch') || lower.includes('network error') || lower.includes('load failed')) {
+    return 'Cannot reach the server. Make sure the backend is running on port 5000 and try again.';
+  }
+  if (lower.includes('401') || lower.includes('unauthorized') || lower.includes('session has expired')) {
+    return 'Your session has expired. Please sign in again and retry.';
+  }
+  if (lower.includes('403') || lower.includes('permission denied') || lower.includes('not authorized')) {
+    return 'You do not have permission to perform this action.';
+  }
+  if (lower.includes('404') || lower.includes('not found')) {
+    return 'The requested resource was not found.';
+  }
+  if (/\b5\d\d\b/.test(msg) || lower.includes('internal server') || lower.includes('server error')) {
+    return 'The server encountered an error. Please try again later.';
+  }
+  return msg;
+}
+
+function getFileIconAndColor(ext = '', mime = '') {
+  const e = ext.toLowerCase();
+  if (e === 'pdf') return { icon: 'picture_as_pdf', color: '#ef4444', label: 'PDF' };
+  if (['ppt', 'pptx'].includes(e)) return { icon: 'slideshow', color: '#f59e0b', label: 'PPTX' };
+  if (['doc', 'docx', 'txt'].includes(e)) return { icon: 'description', color: '#3b82f6', label: 'DOC' };
+  if (['xls', 'xlsx'].includes(e)) return { icon: 'table_chart', color: '#10b981', label: 'XLS' };
+  if (['jpg', 'jpeg', 'png', 'webp'].includes(e) || mime.startsWith('image/')) return { icon: 'image', color: '#8b5cf6', label: 'IMG' };
+  if (e === 'zip') return { icon: 'folder_zip', color: '#06b6d4', label: 'ZIP' };
+  return { icon: 'insert_drive_file', color: '#94a3b8', label: e.toUpperCase() || 'FILE' };
+}
+
+function formatBytes(bytes, decimals = 1) {
+  if (!bytes || bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+export async function fetchAndRenderClassroomFiles(classroomId) {
+  const grid = document.getElementById('classroom-files-grid');
+  const uploadBtn = document.getElementById('btn-upload-classroom-file');
+  if (!grid || !classroomId) return;
+
+  const isTeacherUser = currentUserProfile && isTeacher(currentUserProfile);
+  const currentUid = getAuth().currentUser?.uid;
+  const isFileOwner = isTeacherUser && detailCurrentClassroomCreatedBy === currentUid;
+  if (uploadBtn) uploadBtn.style.display = isFileOwner ? 'inline-flex' : 'none';
+
+  const searchVal = (document.getElementById('files-search-input')?.value || '').trim();
+  const categoryVal = document.getElementById('files-category-filter')?.value || 'all';
+  const sortVal = document.getElementById('files-sort-select')?.value || 'newest';
+
+  grid.innerHTML = '<div class="empty-state-sm" style="text-align:center; padding:60px 0; color:var(--text-muted); grid-column:1/-1;"><i class="material-icons rotating" style="font-size:32px; display:block; margin-bottom:8px;">sync</i> Loading files & resources...</div>';
+
+  try {
+    const url = `/api/classrooms/${classroomId}/files?q=${encodeURIComponent(searchVal)}&category=${encodeURIComponent(categoryVal)}&sort=${encodeURIComponent(sortVal)}`;
+    const files = await fetchWithAuth(url);
+    classroomFilesCache = files || [];
+
+    if (!files || files.length === 0) {
+      const emptyText = isFileOwner
+        ? 'No files uploaded yet. Upload your first classroom resource.'
+        : 'Your teacher has not uploaded any files yet.';
+      grid.innerHTML = `
+        <div class="empty-state-sm" style="text-align:center; padding:60px 20px; color:var(--text-muted); grid-column:1/-1;">
+          <div style="width:64px; height:64px; border-radius:50%; background:rgba(59,130,246,0.1); color:var(--primary); display:flex; align-items:center; justify-content:center; margin:0 auto 16px auto; font-size:32px;">
+            <i class="material-icons" style="font-size:36px;">folder_open</i>
+          </div>
+          <h3 style="margin:0 0 6px 0; font-size:16px; color:var(--text-main);">📁 No files yet</h3>
+          <p style="font-size:13px; color:var(--text-muted); margin:0;">${emptyText}</p>
+        </div>`;
+      return;
+    }
+
+    grid.innerHTML = '';
+    files.forEach(file => {
+      const { icon, color, label } = getFileIconAndColor(file.fileType, file.mimeType);
+      const card = document.createElement('div');
+      card.className = 'activity-card animate-fade';
+      card.style.cssText = 'background:var(--card-bg); border:1px solid var(--border); border-radius:14px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; position:relative; box-shadow:var(--shadow-soft);';
+
+      const fileDate = file.createdAt ? new Date(file.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recently';
+
+      card.innerHTML = `
+        <div style="display:flex; align-items:flex-start; gap:14px;">
+          <div style="width:44px; height:44px; border-radius:10px; background:${color}15; color:${color}; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            <i class="material-icons" style="font-size:24px;">${icon}</i>
+          </div>
+          <div style="flex:1; min-width:0;">
+            <h4 style="margin:0 0 4px 0; font-size:15px; font-weight:600; color:var(--text-main); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;" title="${file.title || file.originalName}">${file.title || file.originalName}</h4>
+            <div style="font-size:12px; color:var(--text-muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span style="background:${color}20; color:${color}; font-weight:700; padding:2px 6px; border-radius:4px; font-size:10px;">${label}</span>
+              <span>&middot; ${formatBytes(file.fileSize)}</span>
+              <span>&middot; ${fileDate}</span>
+            </div>
+            ${file.description ? `<p style="font-size:12px; color:var(--text-muted); margin:6px 0 0 0; line-height:1.4;">${file.description}</p>` : ''}
+            <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
+              Uploaded by <strong>${file.uploadedByName || 'Teacher'}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-top:8px; padding-top:12px; border-top:1px solid var(--border); gap:8px;">
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-primary btn-open-file" style="padding:6px 12px; font-size:12px; display:inline-flex; align-items:center; gap:4px;">
+              <i class="material-icons" style="font-size:14px;">visibility</i> Open
+            </button>
+            <button class="btn btn-outline btn-download-file" style="padding:6px 12px; font-size:12px; display:inline-flex; align-items:center; gap:4px;">
+              <i class="material-icons" style="font-size:14px;">download</i> Download
+            </button>
+          </div>
+          ${isFileOwner ? `
+            <div style="display:flex; gap:4px;">
+              <button class="icon-btn-sm btn-edit-file" title="Edit Metadata" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; padding:4px;"><i class="material-icons" style="font-size:16px;">edit</i></button>
+              <button class="icon-btn-sm btn-delete-file" title="Delete File" style="background:transparent; border:none; color:var(--danger); cursor:pointer; padding:4px;"><i class="material-icons" style="font-size:16px;">delete</i></button>
+            </div>
+          ` : ''}
+        </div>
+      `;
+
+      // Event listeners
+      card.querySelector('.btn-open-file').onclick = () => openClassroomFile(classroomId, file);
+      card.querySelector('.btn-download-file').onclick = () => downloadClassroomFile(classroomId, file);
+
+      if (isFileOwner) {
+        card.querySelector('.btn-edit-file').onclick = () => editClassroomFile(classroomId, file);
+        card.querySelector('.btn-delete-file').onclick = () => deleteClassroomFile(classroomId, file);
+      }
+
+      grid.appendChild(card);
+    });
+  } catch (err) {
+    grid.innerHTML = `<div class="empty-state-sm" style="text-align:center; padding:40px; color:var(--danger); grid-column:1/-1;">Error loading files: ${describeApiError(err)}</div>`;
+  }
+}
+
+function fileDownloadUrl(classroomId, file) {
+  return file.downloadURL || `/api/classrooms/${classroomId}/files/${file.id || file.fileId}/download`;
+}
+
+async function openClassroomFile(classroomId, file) {
+  const downloadUrl = fileDownloadUrl(classroomId, file);
+  const canPreview = ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'txt'].includes((file.fileType || '').toLowerCase());
+
+  try {
+    const blob = await fetchWithAuthBlob(downloadUrl);
+    const url = URL.createObjectURL(blob);
+    if (canPreview) {
+      window.open(url, '_blank');
+    } else {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.originalName || file.fileName || 'download';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch (err) {
+    alert('Failed to open file: ' + describeApiError(err));
+  }
+}
+
+async function downloadClassroomFile(classroomId, file) {
+  const downloadUrl = fileDownloadUrl(classroomId, file);
+  try {
+    const blob = await fetchWithAuthBlob(downloadUrl);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.originalName || file.fileName || 'download';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    showAppToast(`Downloading ${file.originalName || file.title}...`, 'info');
+  } catch (err) {
+    alert('Failed to download file: ' + describeApiError(err));
+  }
+}
+
+async function editClassroomFile(classroomId, file) {
+  const newTitle = prompt('Edit file title:', file.title || file.originalName);
+  if (newTitle === null) return;
+  const newDesc = prompt('Edit file description:', file.description || '');
+  if (newDesc === null) return;
+
+  try {
+    await fetchWithAuth(`/api/classrooms/${classroomId}/files/${file.id || file.fileId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: newTitle, description: newDesc })
+    });
+    showAppToast('File updated successfully.', 'success');
+    fetchAndRenderClassroomFiles(classroomId);
+  } catch (err) {
+    alert('Failed to update file: ' + describeApiError(err));
+  }
+}
+
+async function deleteClassroomFile(classroomId, file) {
+  if (!confirm(`Are you sure you want to delete "${file.title || file.originalName}"?\n\nThis will remove both the document metadata and the file from Firebase Storage.`)) {
+    return;
+  }
+
+  try {
+    await fetchWithAuth(`/api/classrooms/${classroomId}/files/${file.id || file.fileId}`, {
+      method: 'DELETE'
+    });
+
+    const socket = getSocket();
+    if (socket) {
+      socket.emit('delete-file', { classroomId, fileId: file.id || file.fileId });
+    }
+
+    showAppToast(`"${file.originalName || file.title}" was removed.`, 'success');
+    fetchAndRenderClassroomFiles(classroomId);
+  } catch (err) {
+    alert('Failed to delete file: ' + describeApiError(err));
+  }
+}
+
+// Global initialization for Files & Resources tab
+export function initClassroomFilesModule() {
+  // Bind tab click listener
+  document.querySelectorAll('.detail-tab[data-detail-tab]').forEach(tab => {
+    tab.addEventListener('click', (e) => {
+      const target = tab.dataset.detailTab;
+      if (target === 'files' && detailCurrentClassroomId) {
+        fetchAndRenderClassroomFiles(detailCurrentClassroomId);
+      }
+    });
+  });
+
+  // Filter & Search listeners
+  const searchInput = document.getElementById('files-search-input');
+  const catFilter = document.getElementById('files-category-filter');
+  const sortSelect = document.getElementById('files-sort-select');
+
+  if (searchInput) searchInput.oninput = () => { if (detailCurrentClassroomId) fetchAndRenderClassroomFiles(detailCurrentClassroomId); };
+  if (catFilter) catFilter.onchange = () => { if (detailCurrentClassroomId) fetchAndRenderClassroomFiles(detailCurrentClassroomId); };
+  if (sortSelect) sortSelect.onchange = () => { if (detailCurrentClassroomId) fetchAndRenderClassroomFiles(detailCurrentClassroomId); };
+
+  // Upload button listener
+  const btnUpload = document.getElementById('btn-upload-classroom-file');
+  if (btnUpload) {
+    btnUpload.onclick = () => {
+      const modal = document.getElementById('modal-classroom-file-upload');
+      if (modal) {
+        document.getElementById('form-classroom-file-upload')?.reset();
+        document.getElementById('classroom-file-upload-alert').style.display = 'none';
+        document.getElementById('classroom-file-progress-wrapper').style.display = 'none';
+        modal.style.zIndex = '1000000';
+        modal.style.display = 'flex';
+      }
+    };
+  }
+
+  // Upload Form Submit
+  const formUpload = document.getElementById('form-classroom-file-upload');
+  if (formUpload) {
+    formUpload.onsubmit = async (e) => {
+      e.preventDefault();
+      const fileInput = document.getElementById('classroom-file-input');
+      const alertEl = document.getElementById('classroom-file-upload-alert');
+      const progressWrap = document.getElementById('classroom-file-progress-wrapper');
+      const progressBar = document.getElementById('classroom-file-progress-bar');
+      const progressPercent = document.getElementById('classroom-file-progress-percent');
+      const submitBtn = document.getElementById('btn-submit-file-upload');
+
+      const targetClassroomId = detailCurrentClassroomId || window._currentOpenClassroomId;
+      if (!targetClassroomId) {
+        if (alertEl) {
+          alertEl.textContent = 'Error: No active classroom selected. Please reopen the classroom.';
+          alertEl.style.display = 'block';
+        }
+        return;
+      }
+
+      if (!fileInput || !fileInput.files || !fileInput.files[0]) {
+        if (alertEl) {
+          alertEl.textContent = 'Please select a file to upload.';
+          alertEl.style.display = 'block';
+        }
+        return;
+      }
+
+      const file = fileInput.files[0];
+      const MAX_SIZE = 50 * 1024 * 1024; // 50MB
+      const ext = file.name.split('.').pop().toLowerCase();
+      const ALLOWED = new Set(['pdf', 'ppt', 'pptx', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'jpg', 'jpeg', 'png', 'webp', 'zip']);
+
+      if (!ALLOWED.has(ext)) {
+        if (alertEl) {
+          alertEl.textContent = `Unsupported file type: .${ext}. Allowed extensions: PDF, PPT, PPTX, DOC, DOCX, XLS, XLSX, TXT, JPG, JPEG, PNG, WEBP, ZIP.`;
+          alertEl.style.display = 'block';
+        }
+        return;
+      }
+
+      if (file.size > MAX_SIZE) {
+        if (alertEl) {
+          alertEl.textContent = `File size exceeds the 50MB limit (Selected file size: ${(file.size / (1024 * 1024)).toFixed(1)}MB).`;
+          alertEl.style.display = 'block';
+        }
+        return;
+      }
+
+      if (alertEl) alertEl.style.display = 'none';
+      if (progressWrap) progressWrap.style.display = 'block';
+      if (progressBar) progressBar.style.width = '10%';
+      if (progressPercent) progressPercent.textContent = '10%';
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="material-icons rotating">sync</i> Uploading...';
+      }
+
+      try {
+        // Read file as Base64
+        const base64Data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('Failed to read file contents from browser.'));
+          reader.onprogress = (evt) => {
+            if (evt.lengthComputable) {
+              const p = Math.round((evt.loaded / evt.total) * 65);
+              if (progressBar) progressBar.style.width = `${p}%`;
+              if (progressPercent) progressPercent.textContent = `${p}%`;
+            }
+          };
+          reader.readAsDataURL(file);
+        });
+
+        if (progressBar) progressBar.style.width = '80%';
+        if (progressPercent) progressPercent.textContent = '80%';
+
+        const title = document.getElementById('classroom-file-title')?.value || file.name;
+        const description = document.getElementById('classroom-file-desc')?.value || '';
+        const category = document.getElementById('classroom-file-category')?.value || 'Other';
+
+        const payload = {
+          fileName: file.name,
+          originalName: file.name,
+          title,
+          description,
+          category,
+          fileData: base64Data,
+          fileType: ext,
+          mimeType: file.type || 'application/octet-stream',
+          fileSize: file.size,
+        };
+
+        const res = await fetchWithAuth(`/api/classrooms/${targetClassroomId}/files`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (progressBar) progressBar.style.width = '100%';
+        if (progressPercent) progressPercent.textContent = '100%';
+
+        // Notify socket
+        const socket = getSocket();
+        if (socket) {
+          socket.emit('upload-file', { classroomId: targetClassroomId, file: res });
+        }
+
+        showAppToast('✅ File uploaded successfully. Students can now access this file.', 'success');
+
+        // Close modal & reset form
+        const modal = document.getElementById('modal-classroom-file-upload');
+        if (modal) modal.style.display = 'none';
+        formUpload.reset();
+
+        fetchAndRenderClassroomFiles(targetClassroomId);
+      } catch (err) {
+        if (alertEl) {
+          alertEl.textContent = '❌ Upload failed: ' + (describeApiError(err) || 'Server error during upload');
+          alertEl.style.display = 'block';
+        }
+      } finally {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = '<i class="material-icons">cloud_upload</i> Upload';
+        }
+      }
+    };
+  }
+
+  // Socket listener for real-time file uploads & deletes
+  if (!filesSocketBound) {
+    filesSocketBound = true;
+    const socket = getSocket();
+    if (socket) {
+      socket.on('file-uploaded', (data) => {
+        if (data && data.classroomId === detailCurrentClassroomId) {
+          showAppToast(`📎 New file uploaded: ${data.file.originalName || data.file.title}`, 'info');
+          fetchAndRenderClassroomFiles(detailCurrentClassroomId);
+        }
+      });
+
+      socket.on('file-deleted', (data) => {
+        if (data && data.classroomId === detailCurrentClassroomId) {
+          showAppToast(`A file was removed by the teacher.`, 'info');
+          fetchAndRenderClassroomFiles(detailCurrentClassroomId);
+        }
+      });
+    }
+  }
+}
+
+// Auto-run initialization when DOM is loaded
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initClassroomFilesModule);
+} else {
+  initClassroomFilesModule();
+}
+
 
 

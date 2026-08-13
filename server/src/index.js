@@ -16,6 +16,7 @@ import attendanceRoutes from './routes/attendance.js';
 import notesRoutes from './routes/notes.js';
 import meetingsRoutes from './routes/meetings.js';
 import calendarRoutes from './routes/calendar.js';
+import filesRoutes from './routes/files.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,17 +50,20 @@ app.use(cors({
   credentials: true,
 }));
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// 70mb body limit so a 50MB file can be transmitted as Base64 (~67MB) plus JSON overhead
+app.use(express.json({ limit: '70mb' }));
+app.use(express.urlencoded({ extended: true, limit: '70mb' }));
 
-// Register API Routes
-app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/classrooms', classroomsRoutes);
+// Register API Routes - Specific sub-resource routes MUST be registered BEFORE base /api/classrooms
 app.use('/api/classrooms/:classId/assignments', assignmentsRoutes);
 app.use('/api/classrooms/:classId/quizzes', quizzesRoutes);
 app.use('/api/classrooms/:classId/attendance', attendanceRoutes);
 app.use('/api/classrooms/:classId/notes', notesRoutes);
 app.use('/api/classrooms/:classId/meetings', meetingsRoutes);
+app.use('/api/classrooms/:classId/files', filesRoutes);
+
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/classrooms', classroomsRoutes);
 app.use('/api', calendarRoutes);
 
 app.get('/api/health', (req, res) => {

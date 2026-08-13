@@ -10,7 +10,8 @@ service cloud.firestore {
     function isTeacher() { return getRole(request.auth.uid) == 'teacher'; }
     function isStudent() { return getRole(request.auth.uid) == 'student'; }
     function isClassroomCreator(classroomId) {
-      return get(/databases/$(database)/documents/classrooms/$(classroomId)).data.createdBy == request.auth.uid;
+      let data = get(/databases/$(database)/documents/classrooms/$(classroomId)).data;
+      return data.createdBy == request.auth.uid || data.teacherId == request.auth.uid || data.teacherUid == request.auth.uid || data.ownerId == request.auth.uid;
     }
     function isClassroomMember(classroomId) {
       return exists(/databases/$(database)/documents/classrooms/$(classroomId)/members/$(request.auth.uid));
@@ -45,6 +46,28 @@ service cloud.firestore {
       allow delete: if isAuthenticated() && (isOwner(requesterId) || isTeacher());
     }
 
+    // ── Top-level Classroom Requests ─────────────────────────────────────────
+    match /classroomRequests/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource.data.studentUid == request.auth.uid ||
+        resource.data.uid == request.auth.uid ||
+        resource.data.teacherUid == request.auth.uid ||
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.teacherId == request.auth.uid
+      );
+      allow create: if isAuthenticated() && (
+        request.resource.data.studentUid == request.auth.uid ||
+        request.resource.data.uid == request.auth.uid
+      );
+      allow update, delete: if isAuthenticated() && (
+        resource.data.teacherUid == request.auth.uid ||
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.teacherId == request.auth.uid ||
+        resource.data.studentUid == request.auth.uid ||
+        resource.data.uid == request.auth.uid
+      );
+    }
+
     // ── Channels ───────────────────────────────────────────────────────────
     match /channels/{channelId} {
       allow read: if isAuthenticated();
@@ -69,7 +92,14 @@ service cloud.firestore {
 
     // ── Classrooms ─────────────────────────────────────────────────────────
     match /classrooms/{classroomId} {
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() && (
+        resource.data.createdBy == request.auth.uid ||
+        resource.data.teacherId == request.auth.uid ||
+        resource.data.teacherUid == request.auth.uid ||
+        resource.data.ownerId == request.auth.uid ||
+        isClassroomMember(classroomId) ||
+        resource.data.isActive == true
+      );
       allow create: if isAuthenticated() && isTeacher();
       allow update: if isAuthenticated() && isClassroomCreator(classroomId);
       allow delete: if false;
@@ -151,17 +181,57 @@ service cloud.firestore {
 
       // Meetings sub-collection
       match /meetings/{meetingId} {
-        allow read: if isAuthenticated() && isClassroomMember(classroomId);
-        allow create: if isAuthenticated() && (isClassroomCreator(classroomId) || isTeacher());
-        allow update: if isAuthenticated() && (isClassroomCreator(classroomId) || isTeacher());
-        allow delete: if false;
+        allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
+        allow create: if isAuthenticated() && isClassroomCreator(classroomId);
+        allow update: if isAuthenticated() && isClassroomCreator(classroomId);
+        allow delete: if isAuthenticated() && isClassroomCreator(classroomId);
+
+        // Attendance sub-collection
+        match /attendance/{studentUid} {
+          allow read: if isAuthenticated() && (isClassroomCreator(classroomId) || request.auth.uid == studentUid);
+          allow write: if isAuthenticated() && (isClassroomCreator(classroomId) || (isClassroomMember(classroomId) && request.auth.uid == studentUid));
+        }
+
+        // Persistent Messages / Q&A sub-collection
+        match /messages/{messageId} {
+          allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
+          allow create: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
+          allow update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
+        }
+
+        // Live Class Notes sub-collection
+        match /notes/{noteId} {
+          allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
+          allow create, update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
+        }
+
+        // Live Class Resources sub-collection
+        match /resources/{resourceId} {
+          allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
+          allow create, update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
+        }
       }
 
-      // Attendance sub-collection
+      // Attendance sub-collection (legacy alias)
       match /attendance/{date} {
         allow read: if isAuthenticated() && isClassroomMember(classroomId);
-        allow write: if isAuthenticated() && (isClassroomCreator(classroomId) || isTeacher());
+        allow write: if isAuthenticated() && isClassroomCreator(classroomId);
       }
+
+      // Files & Resources sub-collection
+      match /files/{fileId} {
+        allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
+        allow create, update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
+      }
+    }
+
+    // ── Top-level Meetings ──────────────────────────────────────────────────
+    match /meetings/{meetingId} {
+      allow read: if isAuthenticated() && (
+        isClassroomCreator(resource.data.classroomId) ||
+        isClassroomMember(resource.data.classroomId)
+      );
+      allow create, update, delete: if isAuthenticated() && isClassroomCreator(request.resource.data.classroomId);
     }
 
     // ── User Attendance ─────────────────────────────────────────────────────

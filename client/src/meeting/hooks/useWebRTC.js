@@ -43,6 +43,8 @@ export default function useWebRTC() {
   const [remoteStreams, setRemoteStreams] = useState([]);
   const [participants, setParticipants] = useState([]);
   const [messages, setMessages] = useState([]);
+  const [notes, setNotes] = useState([]);
+  const [resources, setResources] = useState([]);
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -51,6 +53,7 @@ export default function useWebRTC() {
   const [selfName, setSelfName] = useState('You');
   const [isHost, setIsHost] = useState(false);
   const [raisedHand, setRaisedHand] = useState(false);
+  const [handRaisedToast, setHandRaisedToast] = useState(null);
   const [selfSocketId, setSelfSocketId] = useState(null);
 
   const publish = useCallback(() => {
@@ -215,8 +218,13 @@ export default function useWebRTC() {
     socketRef.current?.emit('screen-share', { screenShare: false });
   }, [replaceVideoTrackForAllPeers]);
 
-  const joinRoom = useCallback(async ({ roomId: rid, userName }) => {
+  const onMeetingEndedRef = useRef(null);
+  const onKickedRef = useRef(null);
+
+  const joinRoom = useCallback(async ({ roomId: rid, userName, token, onMeetingEnded, onKicked }) => {
     setError(null);
+    onMeetingEndedRef.current = onMeetingEnded;
+    onKickedRef.current = onKicked;
 
     let stream = null;
     try {
@@ -316,9 +324,47 @@ export default function useWebRTC() {
       socket.on('new-message', (msg) => {
         setMessages((prev) => [...prev, msg]);
       });
+
+      socket.on('message-deleted', ({ messageId }) => {
+        setMessages((prev) => prev.map((m) => m.id === messageId ? { ...m, isDeleted: true, text: 'Message deleted', message: 'Message deleted' } : m));
+      });
+
+      socket.on('note-added', (note) => {
+        setNotes((prev) => [...prev, note]);
+      });
+
+      socket.on('resource-added', (res) => {
+        setResources((prev) => [...prev, res]);
+      });
+
+      socket.on('hand-raised-toast', (data) => {
+        setHandRaisedToast(data);
+      });
+
+      socket.on('hand-lowered', () => {
+        setRaisedHand(false);
+      });
+
+      // Meeting Ended Event Listener
+      socket.on('meeting-ended', (data) => {
+        leaveRoom();
+        if (typeof onMeetingEndedRef.current === 'function') {
+          onMeetingEndedRef.current(data);
+        }
+      });
+
+      // Participant Kicked Event Listener
+      socket.on('participant-kicked', (data) => {
+        const reason = data?.reason || 'You were removed from this live class by the teacher.';
+        setError(reason);
+        leaveRoom();
+        if (typeof onKickedRef.current === 'function') {
+          onKickedRef.current(reason);
+        }
+      });
     }
 
-    socketRef.current.emit('join-room', { roomId: rid, userName }, (res) => {
+    socketRef.current.emit('join-room', { roomId: rid, userName, token }, (res) => {
       if (!res?.ok) {
         setError(res?.error || 'Failed to join room.');
         setConnected(false);
@@ -331,7 +377,60 @@ export default function useWebRTC() {
       setParticipants(res.participants || []);
       setConnected(true);
     });
-  }, [connectToPeer, cleanupPeer, publish, startMicMeter]);
+  }, [connectToPeer, cleanupPeer, publish, startMicMeter, leaveRoom]);
+
+  const endMeeting = useCallback((data = {}) => {
+    return new Promise((resolve, reject) => {
+      if (!socketRef.current) return reject(new Error('Socket disconnected'));
+      socketRef.current.emit('end-meeting', { roomId, ...data }, (res) => {
+        if (res?.ok) {
+          leaveRoom();
+          resolve(res);
+        } else {
+          reject(new Error(res?.error || 'Failed to end meeting'));
+        }
+      });
+    });
+  }, [roomId, leaveRoom]);
+
+  const kickParticipant = useCallback((targetSocketId) => {
+    return new Promise((resolve, reject) => {
+      if (!socketRef.current) return reject(new Error('Socket disconnected'));
+      socketRef.current.emit('kick-participant', { targetSocketId }, (res) => {
+        if (res?.ok) {
+          resolve(res);
+        } else {
+          reject(new Error(res?.error || 'Failed to kick participant'));
+        }
+      });
+    });
+  }, []);
+
+  const lowerStudentHand = useCallback((targetSocketId) => {
+    return new Promise((resolve, reject) => {
+      if (!socketRef.current) return reject(new Error('Socket disconnected'));
+      socketRef.current.emit('teacher-lower-hand', { targetSocketId }, (res) => {
+        if (res?.ok) {
+          resolve(res);
+        } else {
+          reject(new Error(res?.error || 'Failed to lower hand'));
+        }
+      });
+    });
+  }, []);
+
+  const deleteMessage = useCallback((messageId) => {
+    return new Promise((resolve, reject) => {
+      if (!socketRef.current) return reject(new Error('Socket disconnected'));
+      socketRef.current.emit('delete-message', { messageId }, (res) => {
+        if (res?.ok) {
+          resolve(res);
+        } else {
+          reject(new Error(res?.error || 'Failed to delete message'));
+        }
+      });
+    });
+  }, []);
 
   const leaveRoom = useCallback(() => {
     if (micLevelRafRef.current) cancelAnimationFrame(micLevelRafRef.current);
@@ -365,6 +464,7 @@ export default function useWebRTC() {
     setIsCameraOff(false);
     setIsScreenSharing(false);
     setRaisedHand(false);
+    setHandRaisedToast(null);
     setSpeakingId(null);
     speakingIdRef.current = null;
   }, []);
@@ -419,10 +519,30 @@ export default function useWebRTC() {
     socketRef.current?.emit('raise-hand', { raisedHand: next });
   }, [raisedHand]);
 
-  const sendMessage = useCallback((text) => {
+  const sendMessage = useCallback((text, isQuestion = false) => {
     const clean = String(text || '').trim();
     if (!clean) return;
-    socketRef.current?.emit('send-message', { text: clean });
+    socketRef.current?.emit('send-message', { text: clean, isQuestion: Boolean(isQuestion) });
+  }, []);
+
+  const addNote = useCallback((data = {}) => {
+    return new Promise((resolve, reject) => {
+      if (!socketRef.current) return reject(new Error('Socket disconnected'));
+      socketRef.current.emit('add-note', data, (res) => {
+        if (res?.ok) resolve(res.note);
+        else reject(new Error(res?.error || 'Failed to add note'));
+      });
+    });
+  }, []);
+
+  const addResource = useCallback((data = {}) => {
+    return new Promise((resolve, reject) => {
+      if (!socketRef.current) return reject(new Error('Socket disconnected'));
+      socketRef.current.emit('add-resource', data, (res) => {
+        if (res?.ok) resolve(res.resource);
+        else reject(new Error(res?.error || 'Failed to add resource'));
+      });
+    });
   }, []);
 
   useEffect(() => {
@@ -449,6 +569,8 @@ export default function useWebRTC() {
     remoteStreams,
     participants,
     messages,
+    notes,
+    resources,
     isMuted,
     isCameraOff,
     isScreenSharing,
@@ -457,13 +579,20 @@ export default function useWebRTC() {
     selfName,
     isHost,
     raisedHand,
+    handRaisedToast,
     selfSocketId,
     joinRoom,
     leaveRoom,
+    endMeeting,
+    kickParticipant,
+    lowerStudentHand,
+    deleteMessage,
     toggleMute,
     toggleCamera,
     toggleScreenShare,
     toggleRaiseHand,
     sendMessage,
+    addNote,
+    addResource,
   };
 }
