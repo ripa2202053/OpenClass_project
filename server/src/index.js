@@ -17,6 +17,7 @@ import notesRoutes from './routes/notes.js';
 import meetingsRoutes from './routes/meetings.js';
 import calendarRoutes from './routes/calendar.js';
 import filesRoutes from './routes/files.js';
+import classworkRoutes from './routes/classwork.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -61,6 +62,7 @@ app.use('/api/classrooms/:classId/attendance', attendanceRoutes);
 app.use('/api/classrooms/:classId/notes', notesRoutes);
 app.use('/api/classrooms/:classId/meetings', meetingsRoutes);
 app.use('/api/classrooms/:classId/files', filesRoutes);
+app.use('/api/classrooms/:classId/classwork', classworkRoutes);
 
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/classrooms', classroomsRoutes);

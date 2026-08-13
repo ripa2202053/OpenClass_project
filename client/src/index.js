@@ -1900,7 +1900,7 @@ function showAppToast(message, type = 'success') {
     toastContainer = document.createElement('div');
     toastContainer.id = 'app-toast-container';
     toastContainer.style.cssText =
-      'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:99999;' +
+      'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:2000000;' +
       'display:flex;flex-direction:column;gap:10px;align-items:center;pointer-events:none;';
     document.body.appendChild(toastContainer);
   }
@@ -2990,6 +2990,8 @@ function openClassroomDetail(classroom) {
   modal.style.display = 'flex';
   switchDetailTab('stream');
   subscribeDetailData(classroom.classroomId);
+  window._currentDetailClassroom = classroom;
+  loadClassworkForCurrentClassroom();
 }
 
 function switchDetailTab(tabName) {
@@ -7872,6 +7874,702 @@ export function initClassroomFilesModule() {
       });
     }
   }
+}
+
+// ═══════════════════════════ CLASS WORK MODULE ═══════════════════════════
+// Teacher-facing class work (assignments / quizzes / resources) and student-facing
+// view + submit flows. Uses the /api/classrooms/:classId/classwork routes.
+let cwCreateType = 'assignment';
+let cwQuestions = [];
+let cwAttachments = [];
+let cwEditId = '';
+
+function cwEsc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function cwFmtTs(ts) {
+  if (!ts) return '';
+  let d;
+  if (ts && typeof ts.toMillis === 'function') d = ts.toMillis();
+  else d = new Date(ts).getTime();
+  if (isNaN(d)) return '';
+  return new Date(d).toLocaleString();
+}
+function cwIcon(type) { return type === 'quiz' ? 'quiz' : type === 'resource' ? 'folder_open' : 'assignment'; }
+function cwColor(type) { return type === 'quiz' ? '#8b5cf6' : type === 'resource' ? '#0891b2' : '#2563eb'; }
+function cwBaseUrl() {
+  const classId = detailCurrentClassroomId || window._currentOpenClassroomId;
+  return classId ? `/api/classrooms/${classId}/classwork` : '';
+}
+function cwToast(message, type = 'success') { showAppToast(message, type); }
+function cwIsTeacherOwner() {
+  const uid = getAuth().currentUser?.uid;
+  if (!uid || !currentUserProfile || !isTeacher(currentUserProfile)) return false;
+  const cls = window._currentDetailClassroom;
+  if (cls) {
+    return [cls.createdBy, cls.teacherId, cls.teacherUid, cls.ownerId, cls.createdByUid].includes(uid);
+  }
+  return detailCurrentClassroomCreatedBy === uid;
+}
+async function cwApi(url, method = 'GET', body) {
+  return fetchWithAuth(url, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
+function toDateTimeLocal(ts) {
+  if (!ts) return '';
+  const d = typeof ts === 'string' ? new Date(ts) : (ts && typeof ts.toMillis === 'function' ? new Date(ts.toMillis()) : new Date(ts));
+  if (isNaN(d.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function loadClassworkForCurrentClassroom() {
+  const grid = document.getElementById('classwork-grid');
+  const createBtn = document.getElementById('btn-create-classwork');
+  const base = cwBaseUrl();
+  if (!base || !grid) return;
+  const isOwner = cwIsTeacherOwner();
+  if (createBtn) createBtn.style.display = isOwner ? 'inline-flex' : 'none';
+  grid.innerHTML = '<div class="empty-state-sm" style="text-align:center; padding:40px 0; color:var(--text-muted); grid-column:1/-1;">Loading class work...</div>';
+  try {
+    const items = await cwApi(base);
+    renderClassworkGrid(items, isOwner);
+  } catch (err) {
+    grid.innerHTML = `<div class="empty-state-sm" style="text-align:center; padding:40px 0; color:#dc2626; grid-column:1/-1;">${cwEsc(describeApiError(err))}</div>`;
+  }
+}
+
+function renderClassworkGrid(items, isOwner) {
+  const grid = document.getElementById('classwork-grid');
+  if (!grid) return;
+  if (!items || items.length === 0) {
+    grid.innerHTML = `<div class="empty-state-sm" style="text-align:center; padding:40px 0; color:var(--text-muted); grid-column:1/-1;">No class work yet. ${isOwner ? 'Click "Create Class Work" to get started.' : 'Your teacher has not posted anything yet.'}</div>`;
+    return;
+  }
+  grid.innerHTML = items.map(w => {
+    const type = w.type || 'assignment';
+    const published = w.published === true || w.status === 'published';
+    const due = w.dueDate ? `<div style="display:flex;align-items:center;gap:4px;"><i class="material-icons" style="font-size:14px;">event</i> Due ${cwEsc(cwFmtTs(w.dueDate))}</div>` : '';
+    const points = w.points ? `<div style="display:flex;align-items:center;gap:4px;"><i class="material-icons" style="font-size:14px;">stars</i> ${w.points} pts</div>` : '';
+    const attCount = (w.attachments || []).length;
+    const atts = attCount ? `<div style="display:flex;align-items:center;gap:4px;"><i class="material-icons" style="font-size:14px;">attach_file</i> ${attCount} attachment${attCount > 1 ? 's' : ''}</div>` : '';
+    const qCount = type === 'quiz' ? `<div style="display:flex;align-items:center;gap:4px;"><i class="material-icons" style="font-size:14px;">quiz</i> ${w.questionCount ?? (w.questions || []).length} questions</div>` : '';
+    let stateHtml = '';
+    if (!isOwner) {
+      if (w.mySubmission && w.mySubmission.submitted) {
+        if (type === 'quiz') stateHtml = `<span style="background:#dcfce7;color:#15803d;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;white-space:nowrap;">Score ${w.mySubmission.score ?? 0}/${w.mySubmission.totalMarks ?? 0}</span>`;
+        else if (type === 'assignment') stateHtml = `<span style="background:#dcfce7;color:#15803d;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;white-space:nowrap;">${w.mySubmission.status === 'graded' ? 'Graded' : 'Submitted'}${w.mySubmission.late ? ' (late)' : ''}</span>`;
+      } else {
+        stateHtml = `<span style="background:#fee2e2;color:#b91c1c;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;white-space:nowrap;">${type === 'resource' ? 'Open' : 'Not done'}</span>`;
+      }
+    } else {
+      stateHtml = published
+        ? `<span style="background:#dcfce7;color:#15803d;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;white-space:nowrap;">Published</span>`
+        : `<span style="background:#fef3c7;color:#b45309;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;white-space:nowrap;">Draft</span>`;
+    }
+    const desc = (w.description || w.instructions || '').slice(0, 140);
+    return `<div class="classwork-card" data-work-id="${w.id}" style="cursor:pointer; background:var(--card-bg); border:1px solid var(--border); border-radius:12px; padding:16px; transition:box-shadow .15s, transform .15s; display:flex; flex-direction:column; gap:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+        <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+          <div style="width:38px;height:38px;border-radius:10px;background:${cwColor(type)}1a; display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="material-icons" style="color:${cwColor(type)};">${cwIcon(type)}</i></div>
+          <div style="min-width:0;">
+            <div style="font-weight:700;font-size:14px;color:var(--text-main);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${cwEsc(w.title || 'Untitled')}</div>
+            <div style="font-size:12px;color:var(--text-muted);text-transform:capitalize;">${type}</div>
+          </div>
+        </div>
+        ${stateHtml}
+      </div>
+      ${desc ? `<div style="font-size:13px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${cwEsc(desc)}</div>` : ''}
+      <div style="display:flex; flex-wrap:wrap; gap:10px; font-size:12px; color:var(--text-muted);">${due}${points}${atts}${qCount}</div>
+      ${isOwner ? `<div style="display:flex; gap:8px; margin-top:4px; border-top:1px solid var(--border); padding-top:10px;">
+        <button class="btn btn-outline cw-card-action" data-action="view" data-work-id="${w.id}" style="padding:4px 12px; font-size:12px;">View</button>
+        <button class="btn btn-outline cw-card-action" data-action="edit" data-work-id="${w.id}" style="padding:4px 12px; font-size:12px;">Edit</button>
+        <button class="btn btn-outline cw-card-action" data-action="delete" data-work-id="${w.id}" style="padding:4px 12px; font-size:12px; color:#dc2626;">Delete</button>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ─── Create / Edit modal ─────────────────────────────────────────────
+function setCwType(type) {
+  cwCreateType = type;
+  document.querySelectorAll('.cw-type-btn').forEach(b => {
+    const active = b.dataset.cwType === type;
+    b.classList.toggle('active', active);
+    b.style.border = active ? '2px solid var(--primary)' : '1px solid var(--border)';
+    b.style.color = active ? 'var(--primary)' : 'var(--text-muted)';
+    b.style.background = active ? 'var(--primary-soft, rgba(37,99,235,.08))' : 'transparent';
+  });
+  const qb = document.getElementById('classwork-quiz-builder');
+  if (qb) qb.style.display = type === 'quiz' ? 'block' : 'none';
+  const dueRow = document.getElementById('cw-due-row');
+  if (dueRow) dueRow.style.display = type === 'resource' ? 'none' : 'flex';
+  const label = document.getElementById('classwork-instructions-label');
+  if (label) label.textContent = type === 'resource' ? 'Description' : 'Instructions / Description';
+}
+
+function renderCwAttachmentList() {
+  const list = document.getElementById('classwork-attachment-list');
+  if (!list) return;
+  if (cwAttachments.length === 0) { list.innerHTML = ''; return; }
+  list.innerHTML = cwAttachments.map((a, i) => `
+    <div style="display:flex; align-items:center; gap:8px; background:var(--bg-color); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
+      <i class="material-icons" style="font-size:18px; color:var(--primary);">attach_file</i>
+      <span style="flex:1; font-size:13px; color:var(--text-main); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${cwEsc(a.originalName || a.fileName || 'file')}</span>
+      <span style="font-size:11px; color:var(--text-muted);">${Math.max(1, ((a.fileSize || 0) / 1024)).toFixed(1)} KB</span>
+      <button type="button" data-att-idx="${i}" class="cw-att-remove" style="background:none;border:none;cursor:pointer;color:#dc2626;"><i class="material-icons" style="font-size:18px;">close</i></button>
+    </div>`).join('');
+  list.querySelectorAll('.cw-att-remove').forEach(btn => {
+    btn.onclick = () => {
+      const i = Number(btn.dataset.attIdx);
+      cwAttachments.splice(i, 1);
+      renderCwAttachmentList();
+    };
+  });
+}
+
+function renderCwQuestionList() {
+  const list = document.getElementById('classwork-question-list');
+  if (!list) return;
+  if (cwQuestions.length === 0) {
+    list.innerHTML = '<div class="empty-state-sm" style="font-size:13px; color:var(--text-muted); text-align:center; padding:12px;">No questions yet. Add one to build your quiz.</div>';
+    return;
+  }
+  list.innerHTML = cwQuestions.map((q, idx) => `
+    <div class="cw-question-block" data-idx="${idx}" style="border:1px solid var(--border); border-radius:10px; padding:12px; margin-bottom:10px; background:var(--bg-color);">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+        <span style="font-weight:700; font-size:13px; color:var(--primary); flex-shrink:0;">Q${idx + 1}</span>
+        <input type="text" class="cw-q-text" placeholder="Question text" value="${cwEsc(q.question)}" style="flex:1;" />
+        <input type="number" class="cw-q-marks" min="0" step="0.5" value="${q.marks != null ? q.marks : 1}" title="Marks" style="width:74px; flex-shrink:0;" placeholder="Marks" />
+        <button type="button" class="cw-q-remove" style="background:none;border:none;cursor:pointer;color:#dc2626; flex-shrink:0;"><i class="material-icons" style="font-size:18px;">delete</i></button>
+      </div>
+      ${q.options.map((opt, oi) => `
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+          <input type="radio" name="cw-opt-${idx}" class="cw-q-correct" data-idx="${idx}" value="${oi}" ${Number(q.correctIndex) === oi ? 'checked' : ''} title="Mark as correct option" style="accent-color:var(--primary); flex-shrink:0;"/>
+          <input type="text" class="cw-q-option" data-oi="${oi}" placeholder="Option ${oi + 1}" value="${cwEsc(opt)}" style="flex:1;" />
+          <span style="font-size:11px; color:var(--text-muted); width:52px; flex-shrink:0;">Correct?</span>
+        </div>`).join('')}
+    </div>`).join('');
+  list.querySelectorAll('.cw-q-remove').forEach(btn => {
+    btn.onclick = () => {
+      const idx = Number(btn.closest('.cw-question-block').dataset.idx);
+      cwQuestions.splice(idx, 1);
+      renderCwQuestionList();
+    };
+  });
+}
+
+function collectCwQuestionsFromDom() {
+  const list = document.getElementById('classwork-question-list');
+  if (!list) return [];
+  return Array.from(list.querySelectorAll('.cw-question-block')).map(row => {
+    const text = (row.querySelector('.cw-q-text').value || '').trim();
+    const marks = Number(row.querySelector('.cw-q-marks').value) || 1;
+    const opts = Array.from(row.querySelectorAll('.cw-q-option')).map(o => o.value.trim());
+    const correctRadio = row.querySelector('.cw-q-correct:checked');
+    const correctIndex = correctRadio ? Number(correctRadio.value) : 0;
+    return { question: text, options: opts, correctIndex, marks };
+  });
+}
+
+function setupCwAttachmentInput() {
+  const input = document.getElementById('classwork-attachment-input');
+  if (!input) return;
+  input.onchange = async () => {
+    const files = Array.from(input.files || []);
+    input.value = '';
+    const classId = detailCurrentClassroomId || window._currentOpenClassroomId;
+    if (!classId || files.length === 0) return;
+    const ALLOWED = new Set(['pdf', 'ppt', 'pptx', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'jpg', 'jpeg', 'png', 'webp', 'zip']);
+    const MAX = 50 * 1024 * 1024;
+    for (const file of files) {
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (!ALLOWED.has(ext)) { cwToast(`Unsupported type: .${ext}`, 'error'); continue; }
+      if (file.size > MAX) { cwToast(`${file.name} exceeds the 50MB limit.`, 'error'); continue; }
+      try {
+        const base64 = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(r.result);
+          r.onerror = () => reject(new Error('Could not read file.'));
+          r.readAsDataURL(file);
+        });
+        const res = await cwApi(`/api/classrooms/${classId}/files`, 'POST', {
+          fileName: file.name, originalName: file.name, fileData: base64,
+          fileType: ext, mimeType: file.type || 'application/octet-stream', fileSize: file.size,
+        });
+        cwAttachments.push({
+          fileId: res.id || res.fileId,
+          fileName: res.fileName || file.name,
+          originalName: res.originalName || res.fileName || file.name,
+          mimeType: res.mimeType || file.type || 'application/octet-stream',
+          fileType: res.fileType || ext,
+          fileSize: res.fileSize || file.size,
+          downloadURL: res.downloadURL || '',
+        });
+        renderCwAttachmentList();
+        cwToast(`Uploaded ${file.name}.`, 'success');
+      } catch (err) {
+        cwToast(describeApiError(err), 'error');
+      }
+    }
+  };
+}
+
+function openCwCreateModal(work) {
+  const modal = document.getElementById('modal-classwork-create');
+  if (!modal) return;
+  cwEditId = work ? work.id : '';
+  cwCreateType = work ? (work.type || 'assignment') : 'assignment';
+  cwAttachments = work && Array.isArray(work.attachments) ? work.attachments.map(a => ({ ...a })) : [];
+  cwQuestions = work && work.type === 'quiz' && Array.isArray(work.questions)
+    ? work.questions.map(q => ({ question: q.question || '', options: [...(q.options || ['', '', '', ''])], correctIndex: q.correctIndex, marks: q.marks }))
+    : [];
+  const titleEl = document.getElementById('classwork-create-title');
+  if (titleEl) titleEl.innerHTML = `<i class="material-icons" style="vertical-align:middle;color:var(--primary);">${work ? 'edit' : 'assignment_add'}</i> ${work ? 'Edit Class Work' : 'Create Class Work'}`;
+  document.getElementById('classwork-edit-id').value = work ? work.id : '';
+  document.getElementById('classwork-title').value = work ? (work.title || '') : '';
+  document.getElementById('classwork-instructions').value = work ? (work.instructions || work.description || '') : '';
+  document.getElementById('classwork-due').value = toDateTimeLocal(work ? work.dueDate : null);
+  document.getElementById('classwork-points').value = work && work.points != null ? work.points : '';
+  document.getElementById('classwork-published').checked = work ? (work.published === true || work.status === 'published') : true;
+  const fileInput = document.getElementById('classwork-attachment-input');
+  if (fileInput) fileInput.value = '';
+  setCwType(cwCreateType);
+  renderCwAttachmentList();
+  renderCwQuestionList();
+  modal.style.zIndex = '1000000';
+  modal.style.display = 'flex';
+}
+
+async function submitCwForm() {
+  const base = cwBaseUrl();
+  if (!base) { cwToast('No active classroom selected. Please reopen the classroom.', 'error'); return; }
+  const title = document.getElementById('classwork-title').value.trim();
+  if (!title) { cwToast('Title is required.', 'error'); return; }
+  const instructions = document.getElementById('classwork-instructions').value.trim();
+  const dueStr = document.getElementById('classwork-due').value;
+  const points = Number(document.getElementById('classwork-points').value) || 0;
+  const published = document.getElementById('classwork-published').checked;
+  const payload = {
+    type: cwCreateType,
+    title,
+    instructions,
+    description: instructions,
+    points: cwCreateType === 'resource' ? undefined : points,
+    published,
+    attachments: cwAttachments,
+  };
+  if (dueStr) payload.dueDate = new Date(dueStr).toISOString();
+  if (cwCreateType === 'quiz') {
+    const questions = collectCwQuestionsFromDom();
+    const valid = questions.filter(q => q.question && (q.options || []).filter(o => o.trim()).length >= 2);
+    if (valid.length === 0) { cwToast('Add at least one question with 2-4 options.', 'error'); return; }
+    payload.questions = valid;
+  }
+  const btn = document.getElementById('btn-save-classwork');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="material-icons rotating">sync</i> Saving...'; }
+  try {
+    await cwApi(cwEditId ? `${base}/${cwEditId}` : base, cwEditId ? 'PUT' : 'POST', payload);
+    cwToast(cwEditId ? 'Class work updated.' : 'Class work created.', 'success');
+    document.getElementById('modal-classwork-create').style.display = 'none';
+    await loadClassworkForCurrentClassroom();
+  } catch (err) {
+    cwToast(describeApiError(err), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="material-icons">save</i> Save'; }
+  }
+}
+
+// ─── View modal (teacher + student) ──────────────────────────────────
+async function cwDownload(url, filename) {
+  try {
+    const blob = await fetchWithAuthBlob(url);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  } catch (err) {
+    cwToast(describeApiError(err), 'error');
+  }
+}
+
+function cwAttachmentsHtml(work) {
+  const atts = work.attachments || [];
+  if (atts.length === 0) return '';
+  return `<div style="margin-top:12px;">
+    <div style="font-weight:600; font-size:13px; color:var(--text-main); margin-bottom:8px;">Attachments</div>
+    ${atts.map((a, i) => `
+      <div style="display:flex; align-items:center; gap:10px; background:var(--bg-color); border:1px solid var(--border); border-radius:8px; padding:8px 12px; margin-bottom:6px;">
+        <i class="material-icons" style="color:var(--primary); font-size:20px;">insert_drive_file</i>
+        <span style="flex:1; font-size:13px; color:var(--text-main); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${cwEsc(a.originalName || a.fileName)}</span>
+        <button type="button" class="btn btn-outline cw-dl-att" data-url="${cwEsc(a.downloadURL || '')}" data-name="${cwEsc(a.originalName || a.fileName || 'file')}" style="padding:4px 12px; font-size:12px;"><i class="material-icons" style="font-size:14px;">download</i> Download</button>
+      </div>`).join('')}
+  </div>`;
+}
+
+function cwHeaderHtml(work, subtitle) {
+  const type = work.type || 'assignment';
+  return `<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:14px; padding:20px 20px 16px; border-bottom:1px solid var(--border);">
+    <div style="display:flex; align-items:center; gap:12px; min-width:0;">
+      <div style="width:44px;height:44px;border-radius:12px;background:${cwColor(type)}1a; display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="material-icons" style="color:${cwColor(type)}; font-size:24px;">${cwIcon(type)}</i></div>
+      <div style="min-width:0;">
+        <div style="font-weight:700; font-size:16px; color:var(--text-main);">${cwEsc(work.title || 'Untitled')}</div>
+        <div style="font-size:12px; color:var(--text-muted);">${cwEsc(subtitle)}</div>
+      </div>
+    </div>
+    <button class="btn btn-icon" data-close="modal-classwork-view" style="background:none;border:none;color:var(--text-muted);cursor:pointer;flex-shrink:0;"><i class="material-icons">close</i></button>
+  </div>`;
+}
+
+function openCwView(workId) {
+  const modal = document.getElementById('modal-classwork-view');
+  const content = document.getElementById('classwork-view-content');
+  const base = cwBaseUrl();
+  if (!base || !modal || !content || !workId) return;
+  modal.style.zIndex = '1000000';
+  modal.style.display = 'flex';
+  content.innerHTML = '<div style="text-align:center;padding:60px 0;color:var(--text-muted);">Loading...</div>';
+  cwApi(`${base}/${workId}`).then(work => {
+    content.innerHTML = '';
+    if (cwIsTeacherOwner()) renderCwTeacherView(work, content, modal);
+    else renderCwStudentView(work, content, modal);
+  }).catch(err => {
+    content.innerHTML = `<div style="text-align:center;padding:40px 0;color:#dc2626;">${cwEsc(describeApiError(err))}</div>`;
+  });
+}
+
+function renderCwTeacherView(work, content, modal) {
+  const type = work.type || 'assignment';
+  const meta = `${type.charAt(0).toUpperCase() + type.slice(1)}${work.points ? ' · ' + work.points + ' pts' : ''}${work.dueDate ? ' · Due ' + cwFmtTs(work.dueDate) : ''}`;
+  content.innerHTML = cwHeaderHtml(work, meta)
+    + `<div style="padding:0 20px;">
+      ${(work.instructions || work.description) ? `<div style="font-size:14px; color:var(--text-main); white-space:pre-wrap; margin-top:12px;">${cwEsc(work.instructions || work.description)}</div>` : ''}
+      ${cwAttachmentsHtml(work)}
+      <div style="margin-top:16px;"><button type="button" class="btn btn-outline cw-view-edit" data-work-id="${work.id}" style="padding:6px 14px; font-size:13px;">Edit</button></div>
+      <div id="cw-teacher-results" style="margin-top:16px;"><div style="text-align:center;padding:24px 0;color:var(--text-muted);">Loading ${type === 'quiz' ? 'attempts' : 'submissions'}...</div></div>
+    </div>`;
+  const editBtn = content.querySelector('.cw-view-edit');
+  if (editBtn) editBtn.onclick = async () => {
+    try {
+      const w = await cwApi(`${cwBaseUrl()}/${work.id}`);
+      modal.style.display = 'none';
+      openCwCreateModal(w);
+    } catch (err) { cwToast(describeApiError(err), 'error'); }
+  };
+  if (type === 'quiz') loadCwTeacherAttempts(work);
+  else if (type === 'assignment') loadCwTeacherSubmissions(work);
+  else {
+    const res = document.getElementById('cw-teacher-results');
+    if (res) res.innerHTML = '<div style="padding:12px 0; color:var(--text-muted); font-size:13px;">This is a resource — no submissions or attempts.</div>';
+  }
+}
+
+async function loadCwTeacherSubmissions(work) {
+  const res = document.getElementById('cw-teacher-results');
+  if (!res) return;
+  try {
+    const subs = await cwApi(`${cwBaseUrl()}/${work.id}/submissions`);
+    if (!subs || subs.length === 0) {
+      res.innerHTML = '<div style="text-align:center;padding:24px 0;color:var(--text-muted);font-size:13px;">No submissions yet.</div>';
+      return;
+    }
+    res.innerHTML = `<div style="font-weight:600; font-size:14px; color:var(--text-main); margin-bottom:10px;">Submissions (${subs.length})</div>` + subs.map(s => `
+      <div class="cw-submission-row" style="border:1px solid var(--border); border-radius:10px; padding:12px 14px; margin-bottom:10px; background:var(--bg-color);">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+          <div style="font-weight:600; font-size:13px; color:var(--text-main);">${cwEsc(s.studentName || s.studentId)}</div>
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            <span style="font-size:11px; color:var(--text-muted);">${cwEsc(cwFmtTs(s.submittedAt))}</span>
+            ${s.status === 'late' ? '<span style="background:#fef3c7;color:#b45309;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;">Late</span>' : '<span style="background:#dcfce7;color:#15803d;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;">Submitted</span>'}
+            ${s.marks != null ? `<span style="background:#e0e7ff;color:#3730a3;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;">${s.marks} pts</span>` : ''}
+          </div>
+        </div>
+        ${s.textAnswer ? `<div style="font-size:13px; color:var(--text-main); white-space:pre-wrap; margin-bottom:8px; border-left:3px solid var(--border); padding-left:10px;">${cwEsc(s.textAnswer)}</div>` : ''}
+        ${s.attachment ? `<div style="margin-bottom:8px;"><button type="button" class="btn btn-outline cw-dl-sub" data-url="/api/classrooms/${detailCurrentClassroomId || window._currentOpenClassroomId}/classwork/${work.id}/submissions/${s.studentId}/file" data-name="${cwEsc(s.attachment.fileName)}" style="padding:4px 12px; font-size:12px;"><i class="material-icons" style="font-size:14px;">download</i> ${cwEsc(s.attachment.fileName)}</button></div>` : ''}
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; border-top:1px dashed var(--border); padding-top:10px;">
+          <input type="number" class="cw-grade-marks" min="0" step="0.5" value="${s.marks != null ? s.marks : ''}" placeholder="Marks" style="width:110px; flex-shrink:0;" />
+          <input type="text" class="cw-grade-feedback" value="${cwEsc(s.feedback || '')}" placeholder="Feedback (optional)" style="flex:1; min-width:160px;" />
+          <button type="button" class="btn btn-primary cw-grade-save" data-student="${s.studentId}" style="padding:5px 14px; font-size:12px;">Save grade</button>
+        </div>
+      </div>`).join('');
+    res.querySelectorAll('.cw-dl-sub').forEach(btn => {
+      btn.onclick = () => cwDownload(btn.dataset.url, btn.dataset.name || 'submission');
+    });
+    res.querySelectorAll('.cw-grade-save').forEach(btn => {
+      btn.onclick = async () => {
+        const row = btn.closest('.cw-submission-row');
+        const marks = Number(row.querySelector('.cw-grade-marks').value);
+        const feedback = row.querySelector('.cw-grade-feedback').value.trim();
+        if (isNaN(marks)) { cwToast('Enter valid marks.', 'error'); return; }
+        btn.disabled = true;
+        try {
+          await cwApi(`${cwBaseUrl()}/${work.id}/submissions/${btn.dataset.student}/grade`, 'POST', { marks, feedback });
+          cwToast('Grade saved.', 'success');
+          loadCwTeacherSubmissions(work);
+          loadClassworkForCurrentClassroom();
+        } catch (err) {
+          cwToast(describeApiError(err), 'error');
+          btn.disabled = false;
+        }
+      };
+    });
+  } catch (err) {
+    res.innerHTML = `<div style="color:#dc2626; text-align:center; padding:20px;">${cwEsc(describeApiError(err))}</div>`;
+  }
+}
+
+async function loadCwTeacherAttempts(work) {
+  const res = document.getElementById('cw-teacher-results');
+  if (!res) return;
+  try {
+    const atts = await cwApi(`${cwBaseUrl()}/${work.id}/attempts`);
+    if (!atts || atts.length === 0) {
+      res.innerHTML = '<div style="text-align:center;padding:24px 0;color:var(--text-muted);font-size:13px;">No attempts yet.</div>';
+      return;
+    }
+    res.innerHTML = `<div style="font-weight:600; font-size:14px; color:var(--text-main); margin-bottom:10px;">Attempts (${atts.length})</div>` + atts.map(a => {
+      const answered = Array.isArray(a.answers) ? a.answers.map(qa => `
+        <div style="font-size:12px; color:var(--text-muted); margin-bottom:2px;">Q${qa.questionIndex + 1}: ${cwEsc(qa.question)} — ${qa.isCorrect ? '<span style="color:#15803d;">Correct</span>' : '<span style="color:#b91c1c;">Incorrect</span>'} <span style="color:var(--text-muted);">(${qa.marks}/${qa.maxMarks})</span></div>`).join('') : '';
+      return `<div style="border:1px solid var(--border); border-radius:10px; padding:12px 14px; margin-bottom:10px; background:var(--bg-color);">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+          <div style="font-weight:600; font-size:13px; color:var(--text-main);">${cwEsc(a.studentName || a.studentId)}</div>
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            <span style="background:#e0e7ff;color:#3730a3;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;">${a.score}/${a.totalMarks} (${a.percentage}%)</span>
+            <span style="font-size:11px; color:var(--text-muted);">${cwEsc(cwFmtTs(a.submittedAt))} · Attempt ${a.attemptNumber || 1}</span>
+          </div>
+        </div>
+        ${answered}
+      </div>`;
+    }).join('');
+  } catch (err) {
+    res.innerHTML = `<div style="color:#dc2626; text-align:center; padding:20px;">${cwEsc(describeApiError(err))}</div>`;
+  }
+}
+
+function renderCwStudentView(work, content, modal) {
+  const type = work.type || 'assignment';
+  const my = work.mySubmission;
+  const meta = `${type.charAt(0).toUpperCase() + type.slice(1)}${work.points ? ' · ' + work.points + ' pts' : ''}${work.dueDate ? ' · Due ' + cwFmtTs(work.dueDate) : ''}`;
+  let body = cwHeaderHtml(work, meta);
+  body += `<div style="padding:0 20px 20px;">
+    ${(work.instructions || work.description) ? `<div style="font-size:14px; color:var(--text-main); white-space:pre-wrap; margin-top:12px;">${cwEsc(work.instructions || work.description)}</div>` : ''}
+    ${cwAttachmentsHtml(work)}`;
+  if (type === 'resource') {
+    body += '</div>';
+    content.innerHTML = body;
+    bindCwAttachments(content);
+    return;
+  }
+  if (type === 'quiz') {
+    body += renderCwQuizForm(work, my);
+  } else {
+    body += renderCwAssignmentForm(work, my);
+  }
+  body += '</div>';
+  content.innerHTML = body;
+  bindCwAttachments(content);
+  bindCwStudentForms(content, work);
+}
+
+function bindCwAttachments(content) {
+  content.querySelectorAll('.cw-dl-att').forEach(btn => {
+    btn.onclick = () => cwDownload(btn.dataset.url || '', btn.dataset.name || 'file');
+  });
+  content.querySelectorAll('.cw-dl-sub').forEach(btn => {
+    btn.onclick = () => cwDownload(btn.dataset.url || '', btn.dataset.name || 'submission');
+  });
+}
+
+function renderCwQuizForm(work, my) {
+  if (my && my.submitted) {
+    const pct = my.percentage != null ? my.percentage : (my.totalMarks ? Math.round((my.score / my.totalMarks) * 100) : 0);
+    return `<div style="margin-top:16px; background:var(--bg-color); border:1px solid var(--border); border-radius:12px; padding:20px; text-align:center;">
+      <i class="material-icons" style="font-size:40px; color:var(--primary);">fact_check</i>
+      <div style="font-size:16px; font-weight:700; color:var(--text-main); margin:8px 0;">Quiz Completed</div>
+      <div style="font-size:13px; color:var(--text-muted);">Submitted ${cwEsc(cwFmtTs(my.submittedAt))}</div>
+      <div style="font-size:28px; font-weight:800; color:${pct >= 60 ? '#15803d' : '#b91c1c'}; margin:12px 0;">${my.score ?? 0} / ${my.totalMarks ?? 0}</div>
+      <div style="font-size:14px; color:var(--text-muted);">${pct}%</div>
+    </div>`;
+  }
+  const questions = work.questions || [];
+  return `<div style="margin-top:16px;">
+    <div style="font-weight:600; font-size:14px; color:var(--text-main); margin-bottom:10px;">Answer the questions</div>
+    ${questions.map((q, qi) => `
+      <div style="border:1px solid var(--border); border-radius:10px; padding:12px 14px; margin-bottom:10px; background:var(--bg-color);">
+        <div style="font-weight:600; font-size:13px; color:var(--text-main); margin-bottom:8px;">${qi + 1}. ${cwEsc(q.question)} <span style="color:var(--text-muted); font-weight:400;">(${q.marks} pts)</span></div>
+        ${(q.options || []).map((opt, oi) => `
+          <label style="display:flex; align-items:center; gap:8px; padding:6px 0; cursor:pointer; font-size:13px; color:var(--text-main);">
+            <input type="radio" name="cw-quiz-q-${qi}" value="${oi}" style="accent-color:var(--primary);" />
+            ${cwEsc(opt)}
+          </label>`).join('')}
+      </div>`).join('')}
+    <button type="button" id="cw-quiz-submit-btn" class="btn btn-primary" style="padding:10px 20px;"><i class="material-icons" style="font-size:16px;">send</i> Submit Quiz</button>
+  </div>`;
+}
+
+function renderCwAssignmentForm(work, my) {
+  if (my && my.submitted) {
+    const gradeHtml = (my.marks != null)
+      ? `<div style="margin-top:12px; background:#e0e7ff; border-radius:8px; padding:10px 14px; font-size:13px; color:var(--text-main);"><strong>Grade:</strong> ${my.marks} pts${my.feedback ? ' — ' + cwEsc(my.feedback) : ''}</div>`
+      : `<div style="margin-top:12px; font-size:12px; color:var(--text-muted);">Not graded yet.</div>`;
+    return `<div style="margin-top:16px; background:var(--bg-color); border:1px solid var(--border); border-radius:12px; padding:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+        <div style="font-weight:700; font-size:14px; color:var(--text-main);"><i class="material-icons" style="vertical-align:middle; color:#15803d; font-size:18px;">check_circle</i> Submitted</div>
+        <span style="font-size:12px; color:var(--text-muted);">${cwEsc(cwFmtTs(my.submittedAt))}${my.late ? ' · <span style="color:#b45309;">Late</span>' : ''}</span>
+      </div>
+      ${my.textAnswer ? `<div style="font-size:13px; color:var(--text-main); white-space:pre-wrap; margin-top:10px; border-left:3px solid var(--border); padding-left:10px;">${cwEsc(my.textAnswer)}</div>` : ''}
+      ${my.attachment ? `<div style="margin-top:10px;"><button type="button" class="btn btn-outline cw-dl-sub" data-url="/api/classrooms/${detailCurrentClassroomId || window._currentOpenClassroomId}/classwork/${work.id}/submissions/${getAuth().currentUser?.uid}/file" data-name="${cwEsc(my.attachment.fileName)}" style="padding:4px 12px; font-size:12px;"><i class="material-icons" style="font-size:14px;">download</i> ${cwEsc(my.attachment.fileName)}</button></div>` : ''}
+      ${gradeHtml}
+      ${work.allowResubmission ? `<button type="button" id="cw-resubmit-btn" class="btn btn-outline" style="margin-top:14px; padding:6px 14px; font-size:13px;">Submit Again</button>` : ''}
+    </div>`;
+  }
+  return `<div style="margin-top:16px; background:var(--bg-color); border:1px solid var(--border); border-radius:12px; padding:16px;">
+    <div style="font-weight:600; font-size:14px; color:var(--text-main); margin-bottom:10px;">Your work</div>
+    <textarea id="cw-submit-text" rows="3" placeholder="Type your answer here... (optional if attaching a file)" style="width:100%; margin-bottom:10px;"></textarea>
+    <input type="file" id="cw-submit-file" style="display:block; margin-bottom:10px;" />
+    <button type="button" id="cw-submit-btn" class="btn btn-primary" style="padding:10px 20px;"><i class="material-icons" style="font-size:16px;">send</i> Submit</button>
+  </div>`;
+}
+
+function bindCwStudentForms(content, work) {
+  const type = work.type || 'assignment';
+  const submitBtn = content.querySelector('#cw-submit-btn');
+  if (submitBtn) {
+    submitBtn.onclick = async () => {
+      const textEl = content.querySelector('#cw-submit-text');
+      const fileEl = content.querySelector('#cw-submit-file');
+      const text = textEl ? textEl.value.trim() : '';
+      const file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+      if (!text && !file) { cwToast('Provide a text answer or attach a file.', 'error'); return; }
+      const payload = { textAnswer: text };
+      const ALLOWED = new Set(['pdf', 'ppt', 'pptx', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'jpg', 'jpeg', 'png', 'webp', 'zip']);
+      const MAX = 50 * 1024 * 1024;
+      if (file) {
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        if (!ALLOWED.has(ext)) { cwToast(`Unsupported type: .${ext}`, 'error'); return; }
+        if (file.size > MAX) { cwToast('File exceeds the 50MB limit.', 'error'); return; }
+        try {
+          const base64 = await new Promise((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(r.result);
+            r.onerror = () => reject(new Error('Could not read file.'));
+            r.readAsDataURL(file);
+          });
+          payload.fileName = file.name;
+          payload.fileData = base64;
+          payload.mimeType = file.type || 'application/octet-stream';
+          payload.fileSize = file.size;
+        } catch (err) { cwToast(describeApiError(err), 'error'); return; }
+      }
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<i class="material-icons rotating">sync</i> Submitting...';
+      try {
+        await cwApi(`${cwBaseUrl()}/${work.id}/submissions`, 'POST', payload);
+        cwToast('Assignment submitted.', 'success');
+        const w = await cwApi(`${cwBaseUrl()}/${work.id}`);
+        content.innerHTML = '';
+        renderCwStudentView(w, content, document.getElementById('modal-classwork-view'));
+        loadClassworkForCurrentClassroom();
+      } catch (err) {
+        cwToast(describeApiError(err), 'error');
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i class="material-icons" style="font-size:16px;">send</i> Submit';
+      }
+    };
+  }
+  const resubBtn = content.querySelector('#cw-resubmit-btn');
+  if (resubBtn) {
+    resubBtn.onclick = () => {
+      const w = work;
+      w.mySubmission = null;
+      content.innerHTML = '';
+      renderCwStudentView(w, content, document.getElementById('modal-classwork-view'));
+    };
+  }
+  const quizBtn = content.querySelector('#cw-quiz-submit-btn');
+  if (quizBtn) {
+    quizBtn.onclick = async () => {
+      const questions = work.questions || [];
+      const answers = questions.map((q, qi) => {
+        const checked = content.querySelector(`input[name="cw-quiz-q-${qi}"]:checked`);
+        return checked ? Number(checked.value) : null;
+      });
+      const unanswered = answers.filter(a => a === null).length;
+      if (unanswered > 0 && !confirm(`${unanswered} question(s) unanswered. Unanswered questions will be marked wrong. Submit anyway?`)) return;
+      quizBtn.disabled = true;
+      quizBtn.innerHTML = '<i class="material-icons rotating">sync</i> Submitting...';
+      try {
+        await cwApi(`${cwBaseUrl()}/${work.id}/quiz-submit`, 'POST', { answers });
+        cwToast('Quiz submitted and graded.', 'success');
+        const w = await cwApi(`${cwBaseUrl()}/${work.id}`);
+        content.innerHTML = '';
+        renderCwStudentView(w, content, document.getElementById('modal-classwork-view'));
+        loadClassworkForCurrentClassroom();
+      } catch (err) {
+        cwToast(describeApiError(err), 'error');
+        quizBtn.disabled = false;
+        quizBtn.innerHTML = '<i class="material-icons" style="font-size:16px;">send</i> Submit Quiz';
+      }
+    };
+  }
+}
+
+export function initClassWorkModule() {
+  const createBtn = document.getElementById('btn-create-classwork');
+  if (createBtn) createBtn.onclick = () => openCwCreateModal(null);
+
+  document.querySelectorAll('.cw-type-btn').forEach(b => { b.onclick = () => setCwType(b.dataset.cwType); });
+  const addQBtn = document.getElementById('cw-add-question');
+  if (addQBtn) addQBtn.onclick = () => { cwQuestions.push({ question: '', options: ['', '', '', ''], correctIndex: 0, marks: 1 }); renderCwQuestionList(); };
+  setupCwAttachmentInput();
+  const form = document.getElementById('form-classwork-create');
+  if (form) form.onsubmit = (e) => { e.preventDefault(); submitCwForm(); };
+
+  const grid = document.getElementById('classwork-grid');
+  if (grid) {
+    grid.addEventListener('click', async (e) => {
+      const workId = e.target.closest('[data-work-id]')?.dataset.workId;
+      if (!workId) return;
+      const actionBtn = e.target.closest('[data-action]');
+      if (actionBtn) {
+        e.stopPropagation();
+        const action = actionBtn.dataset.action;
+        if (action === 'edit') {
+          try {
+            const work = await cwApi(`${cwBaseUrl()}/${workId}`);
+            openCwCreateModal(work);
+          } catch (err) { cwToast(describeApiError(err), 'error'); }
+        } else if (action === 'delete') {
+          if (confirm('Delete this class work? This cannot be undone.')) {
+            try {
+              await cwApi(`${cwBaseUrl()}/${workId}`, 'DELETE');
+              cwToast('Class work deleted.', 'success');
+              loadClassworkForCurrentClassroom();
+            } catch (err) { cwToast(describeApiError(err), 'error'); }
+          }
+        } else if (action === 'view') {
+          openCwView(workId);
+        }
+        return;
+      }
+      openCwView(workId);
+    });
+  }
+
+  document.querySelectorAll('.detail-tab[data-detail-tab="stats"]').forEach(tab => {
+    tab.addEventListener('click', () => { if (detailCurrentClassroomId) loadClassworkForCurrentClassroom(); });
+  });
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initClassWorkModule);
+} else {
+  initClassWorkModule();
 }
 
 // Auto-run initialization when DOM is loaded

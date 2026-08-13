@@ -1569,6 +1569,78 @@
   </div>
 </div>
 
+<!-- ═══════════════════════════ CLASS WORK CREATE/EDIT MODAL ═══════════════════════════ -->
+<div id="modal-classwork-create" class="modal-overlay" style="display:none; z-index:1000000;">
+  <div class="modal" style="max-width:680px; width:95%; max-height:90vh; overflow-y:auto;">
+    <div class="modal-header">
+      <h3 id="classwork-create-title" style="margin:0;"><i class="material-icons" style="vertical-align:middle;color:var(--primary);">assignment_add</i> Create Class Work</h3>
+      <button class="btn btn-icon" data-close="modal-classwork-create" style="background:none;border:none;color:var(--text-muted);cursor:pointer;"><i class="material-icons">close</i></button>
+    </div>
+    <form id="form-classwork-create">
+      <input type="hidden" id="classwork-edit-id" value="" />
+      <div style="display:flex; gap:8px; margin-bottom:16px;">
+        <button type="button" class="btn cw-type-btn active" data-cw-type="assignment"><i class="material-icons" style="font-size:16px;">assignment</i> Assignment</button>
+        <button type="button" class="btn cw-type-btn" data-cw-type="quiz"><i class="material-icons" style="font-size:16px;">quiz</i> Quiz</button>
+        <button type="button" class="btn cw-type-btn" data-cw-type="resource"><i class="material-icons" style="font-size:16px;">folder_open</i> Resource</button>
+      </div>
+
+      <div class="form-group" style="margin-bottom:14px;">
+        <label for="classwork-title">Title *</label>
+        <input type="text" id="classwork-title" placeholder="e.g. Chapter 5: Functions" required />
+      </div>
+
+      <div class="form-group" style="margin-bottom:14px;">
+        <label id="classwork-instructions-label" for="classwork-instructions">Instructions / Description</label>
+        <textarea id="classwork-instructions" rows="3" placeholder="Add instructions for your students..."></textarea>
+      </div>
+
+      <div id="cw-due-row" style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:14px;">
+        <div class="form-group" style="flex:1; min-width:200px;">
+          <label for="classwork-due">Due Date</label>
+          <input type="datetime-local" id="classwork-due" />
+        </div>
+        <div class="form-group" style="flex:0 0 140px;">
+          <label for="classwork-points">Points</label>
+          <input type="number" id="classwork-points" min="0" step="0.5" placeholder="10" />
+        </div>
+      </div>
+
+      <div class="form-group" style="margin-bottom:14px;">
+        <label>Attachments <span style="color:var(--text-muted);font-size:12px;">(uploaded to your class files)</span></label>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <input type="file" id="classwork-attachment-input" multiple style="flex:1;" />
+        </div>
+        <div id="classwork-attachment-list" style="display:flex; flex-direction:column; gap:6px; margin-top:8px;"></div>
+      </div>
+
+      <div id="classwork-quiz-builder" style="display:none; margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <label style="font-weight:600; color:var(--text-main);">Questions</label>
+          <button type="button" id="cw-add-question" class="btn btn-outline" style="padding:4px 10px; font-size:12px;"><i class="material-icons" style="font-size:14px;">add</i> Add Question</button>
+        </div>
+        <div id="classwork-question-list"></div>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:18px;">
+        <input type="checkbox" id="classwork-published" checked style="width:16px;height:16px;accent-color:var(--primary);" />
+        <label for="classwork-published" style="margin:0; cursor:pointer;">Publish now (students can see it immediately)</label>
+      </div>
+
+      <div class="modal-footer" style="margin: 24px -24px -24px -24px; display:flex; justify-content:flex-end; gap:10px; padding:16px 24px;">
+        <button type="button" class="btn btn-outline" data-close="modal-classwork-create">Cancel</button>
+        <button type="submit" id="btn-save-classwork" class="btn btn-primary"><i class="material-icons">save</i> Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ CLASS WORK VIEW MODAL (student + teacher) ═══════════════════════════ -->
+<div id="modal-classwork-view" class="modal-overlay" style="display:none; z-index:1000000;">
+  <div class="modal" style="max-width:760px; width:95%; max-height:92vh; overflow-y:auto;">
+    <div id="classwork-view-content"></div>
+  </div>
+</div>
+
 <!-- ═══════════════════════════ GOOGLE CLASSROOM FULLSCREEN VIEW MODAL ═══════════════════════════ -->
 <div id="modal-classroom-detail" class="modal-overlay gc-fullscreen-overlay" style="display:none">
   <div class="modal modal-xl gc-fullscreen-modal">
@@ -1696,6 +1768,24 @@
           <div style="padding:24px;background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius-lg);">
             <h3 style="margin-bottom:16px;">Classroom Work & Materials</h3>
             <div id="detail-notices-list"><div class="empty-state-sm" style="text-align:center;padding:20px 0;color:var(--text-muted);font-size:14px;">No materials posted yet.</div></div>
+          </div>
+
+          <!-- CLASS WORK SECTION -->
+          <div style="padding:24px;background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius-lg);margin-top:24px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:20px;">
+              <div>
+                <h3 style="margin:0; display:flex; align-items:center; gap:8px;">
+                  <i class="material-icons" style="color:var(--primary);">assignment</i> Class Work
+                </h3>
+                <p style="margin:4px 0 0 0; font-size:12px; color:var(--text-muted);">Assignments, quizzes, and resources for your class.</p>
+              </div>
+              <button id="btn-create-classwork" class="btn btn-primary" style="display:none; padding:8px 16px; font-size:13px;">
+                <i class="material-icons" style="font-size:16px;">add</i> Create Class Work
+              </button>
+            </div>
+            <div id="classwork-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:16px;">
+              <div class="empty-state-sm" style="text-align:center; padding:40px 0; color:var(--text-muted); grid-column:1/-1;">Loading class work...</div>
+            </div>
           </div>
         </div>
 
