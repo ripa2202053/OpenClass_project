@@ -1680,18 +1680,23 @@
     <!-- Modal Content Body -->
     <div class="modal-body gc-fullscreen-body" style="padding:0; flex:1; overflow-y:auto;">
       <!-- Hero Banner Header for Class -->
-      <div class="gc-hero-banner" id="detail-hero-banner">
-        <div class="gc-hero-overlay"></div>
-        <div class="gc-hero-content">
+      <div class="gc-hero-banner" id="detail-hero-banner" style="background-size:cover; background-position:center; position:relative; min-height:180px; border-radius:16px; margin:20px 32px 0 32px; padding:28px; display:flex; flex-direction:column; justify-content:flex-end; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.3);">
+        <div class="gc-hero-overlay" style="position:absolute; inset:0; background:linear-gradient(180deg, rgba(15,23,42,0.4) 0%, rgba(15,23,42,0.88) 100%); z-index:1;"></div>
+        <div class="gc-hero-content" style="position:relative; z-index:2; display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:16px;">
           <div>
-            <h1 id="detail-hero-title" class="gc-hero-title">Classroom Name</h1>
-            <p id="detail-hero-subtitle" class="gc-hero-subtitle">Section / Subject</p>
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px; flex-wrap:wrap;">
+              <h1 id="detail-hero-title" class="gc-hero-title" style="font-size:24px; font-weight:700; color:#ffffff; margin:0; text-shadow:0 2px 4px rgba(0,0,0,0.5);">Classroom Name</h1>
+              <span id="detail-hero-badge" style="background:rgba(30,41,59,0.85); border:1px solid rgba(255,255,255,0.2); color:#e2e8f0; font-size:11px; font-weight:600; padding:4px 12px; border-radius:20px; backdrop-filter:blur(8px);">Course Meta</span>
+            </div>
+            <p id="detail-hero-subtitle" class="gc-hero-subtitle" style="font-size:13px; color:rgba(248,250,252,0.85); margin:0;">Section / Subject</p>
           </div>
-          <div class="gc-hero-teacher-badge" style="display:flex; align-items:center; gap:12px; background:rgba(0,0,0,0.4); backdrop-filter:blur(8px); padding:8px 16px; border-radius:30px; border:1px solid rgba(255,255,255,0.2);">
-            <div id="detail-hero-avatar" class="gc-hero-avatar" style="width:36px; height:36px; border-radius:50%; background-size:cover; background-position:center; background-color:var(--primary); display:flex; align-items:center; justify-content:center; color:white; font-weight:700;"></div>
+          <div class="gc-hero-teacher-badge" style="display:flex; align-items:center; gap:12px; background:rgba(15,23,42,0.65); backdrop-filter:blur(12px); padding:10px 18px; border-radius:14px; border:1px solid rgba(255,255,255,0.15); box-shadow:0 4px 16px rgba(0,0,0,0.3);">
+            <div id="detail-hero-avatar" class="gc-hero-avatar" style="width:40px; height:40px; border-radius:50%; background-size:cover; background-position:center; background-color:var(--primary); display:flex; align-items:center; justify-content:center; color:white; font-weight:700; border:2px solid rgba(59,130,246,0.4);"></div>
             <div>
-              <div id="detail-hero-teacher-name" style="font-weight:600; font-size:14px;">Teacher Name</div>
-              <div style="font-size:11px; opacity:0.8;">Instructor</div>
+              <div id="detail-hero-teacher-name" style="font-weight:600; font-size:14px; color:#f8fafc;">Teacher Name</div>
+              <div style="font-size:11px; color:#3b82f6; font-weight:500; display:flex; align-items:center; gap:4px;">
+                <i class="material-icons" style="font-size:12px;">verified</i> Lead Instructor
+              </div>
             </div>
           </div>
         </div>
@@ -1811,35 +1816,6 @@
 
         <!-- FILES & RESOURCES TAB -->
         <div class="detail-panel" id="detail-panel-files" style="display:none;">
-          <!-- Modern Dark Gradient Hero Banner -->
-          <div class="files-hero-banner animate-fade" style="background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%); border: 1px solid #1e293b; border-radius: 16px; padding: 24px 28px; margin-bottom: 24px; position: relative; overflow: hidden; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
-            <!-- Left Info -->
-            <div style="display: flex; align-items: center; gap: 16px; min-width: 280px; flex: 1;">
-              <div style="width: 52px; height: 52px; border-radius: 14px; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); color: #3b82f6; display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 0 20px rgba(59,130,246,0.2);">
-                <i class="material-icons" style="font-size: 28px;">folder_special</i>
-              </div>
-              <div>
-                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap;">
-                  <h2 id="files-banner-classroom-name" style="font-size: 22px; font-weight: 700; color: #f8fafc; margin: 0; letter-spacing: -0.02em;">Classroom Files & Resources</h2>
-                  <span id="files-banner-course-meta" style="background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(255, 255, 255, 0.1); color: #94a3b8; font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: 20px;">Resource Hub</span>
-                </div>
-                <p id="files-banner-classroom-sub" style="font-size: 13px; color: #94a3b8; margin: 0;">Access lecture slides, documents, syllabus, and course materials.</p>
-              </div>
-            </div>
-
-            <!-- Right Instructor Badge -->
-            <div id="files-banner-instructor-badge" style="background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 14px; padding: 10px 18px; display: flex; align-items: center; gap: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.2);">
-              <div id="files-banner-instructor-avatar" style="width: 40px; height: 40px; border-radius: 50%; background-size: cover; background-position: center; background-color: #2563eb; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 15px; border: 2px solid rgba(59, 130, 246, 0.4);">
-                <i class="material-icons" style="font-size: 20px;">person</i>
-              </div>
-              <div>
-                <div id="files-banner-instructor-name" style="font-weight: 600; font-size: 14px; color: #f8fafc;">Teacher</div>
-                <div id="files-banner-instructor-role" style="font-size: 11px; color: #3b82f6; font-weight: 500; display: flex; align-items: center; gap: 4px;">
-                  <i class="material-icons" style="font-size: 12px;">verified</i> Lead Instructor
-                </div>
-              </div>
-            </div>
-          </div>
 
           <!-- Single-Row Toolbar (Search, Filters, Action Button) -->
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px; margin-bottom:24px; background:#0f172a; border:1px solid #1e293b; border-radius:16px; padding:14px 18px; box-shadow:0 4px 16px rgba(0,0,0,0.2);">

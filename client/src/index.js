@@ -2643,15 +2643,16 @@ function openClassroomDetail(classroom) {
   const heroTitle = document.getElementById('detail-hero-title');
   if (heroTitle) heroTitle.textContent = classroom.classroomName || 'Classroom';
   const heroSub = document.getElementById('detail-hero-subtitle');
-  if (heroSub) heroSub.textContent = classroom.courseCode || classroom.section || classroom.subject || '';
+  if (heroSub) heroSub.textContent = classroom.description || classroom.section || classroom.subject || 'Access lecture slides, documents, syllabus, and course materials.';
+  const heroBadge = document.getElementById('detail-hero-badge');
+  if (heroBadge) heroBadge.textContent = `${classroom.courseCode || classroom.section || classroom.subject || 'Course'} • ${classroom.memberCount || 1} Students`;
   
   const heroBanner = document.getElementById('detail-hero-banner');
   if (heroBanner) {
     if (classroom.coverImageUrl) {
-      heroBanner.style.backgroundImage = `url('${classroom.coverImageUrl}')`;
+      heroBanner.style.backgroundImage = `linear-gradient(180deg, rgba(15,23,42,0.4) 0%, rgba(15,23,42,0.88) 100%), url('${classroom.coverImageUrl}')`;
     } else {
-      heroBanner.style.backgroundImage = '';
-      heroBanner.style.background = getThemeGradient(classroom.themeColor);
+      heroBanner.style.backgroundImage = `linear-gradient(180deg, rgba(15,23,42,0.4) 0%, rgba(15,23,42,0.88) 100%), url('https://images.unsplash.com/photo-1517694712202-14dd9538aa97?auto=format&fit=crop&w=1200&q=80')`;
     }
   }
 
@@ -7514,91 +7515,105 @@ export async function fetchAndRenderClassroomFiles(classroomId) {
 
   files.forEach(file => {
     const { icon, color, label } = getFileIconAndColor(file.fileType, file.mimeType);
+    const downloadUrl = fileDownloadUrl(classroomId, file);
+    const isImg = ['jpg', 'jpeg', 'png', 'webp'].includes((file.fileType || '').toLowerCase()) || (file.mimeType || '').startsWith('image/');
+    const fileDate = file.createdAt ? new Date(file.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recently';
+
     const card = document.createElement('div');
     card.className = 'activity-card animate-fade';
-    card.style.cssText = 'background:#0f172a; border:1px solid #1e293b; border-radius:16px; padding:20px; display:flex; flex-direction:column; justify-content:space-between; gap:16px; position:relative; box-shadow:0 4px 16px rgba(0,0,0,0.25); transition:all 0.2s ease;';
+    card.style.cssText = 'background:#0f172a; border:1px solid #1e293b; border-radius:16px; padding:14px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; position:relative; box-shadow:0 4px 16px rgba(0,0,0,0.25); transition:all 0.2s ease; cursor:pointer;';
     card.onmouseenter = () => { card.style.borderColor = '#3b82f6'; card.style.transform = 'translateY(-2px)'; card.style.boxShadow = '0 8px 24px rgba(0,0,0,0.35)'; };
     card.onmouseleave = () => { card.style.borderColor = '#1e293b'; card.style.transform = 'none'; card.style.boxShadow = '0 4px 16px rgba(0,0,0,0.25)'; };
 
-    const fileDate = file.createdAt ? new Date(file.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recently';
+    let previewHtml = '';
+    if (isImg) {
+      previewHtml = `
+        <div style="height:140px; border-radius:10px; overflow:hidden; position:relative; background:#1e293b; display:flex; align-items:center; justify-content:center;">
+          <img src="${downloadUrl}" alt="${file.title || 'Preview'}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+          <div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; background:linear-gradient(135deg, ${color}20, #0f172a); color:${color};">
+            <i class="material-icons" style="font-size:48px;">${icon}</i>
+          </div>
+          <span style="position:absolute; bottom:8px; left:8px; background:${color}; color:#ffffff; font-weight:700; font-size:10px; padding:3px 8px; border-radius:6px; letter-spacing:0.5px; box-shadow:0 2px 8px rgba(0,0,0,0.4); z-index:2;">${label} &bull; ${formatBytes(file.fileSize)}</span>
+        </div>`;
+    } else {
+      previewHtml = `
+        <div style="height:140px; border-radius:10px; overflow:hidden; position:relative; background:linear-gradient(135deg, ${color}18 0%, #0f172a 100%); border:1px solid ${color}25; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px;">
+          <div style="width:52px; height:52px; border-radius:14px; background:${color}20; border:1px solid ${color}35; color:${color}; display:flex; align-items:center; justify-content:center; box-shadow:0 0 20px ${color}20;">
+            <i class="material-icons" style="font-size:30px;">${icon}</i>
+          </div>
+          <span style="font-size:11px; font-weight:600; color:#94a3b8; text-transform:uppercase; letter-spacing:1px;">Document Preview</span>
+          <span style="position:absolute; bottom:8px; left:8px; background:${color}; color:#ffffff; font-weight:700; font-size:10px; padding:3px 8px; border-radius:6px; letter-spacing:0.5px; box-shadow:0 2px 8px rgba(0,0,0,0.4); z-index:2;">${label} &bull; ${formatBytes(file.fileSize)}</span>
+        </div>`;
+    }
 
     card.innerHTML = `
-      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
-        <div style="display:flex; align-items:center; gap:12px; min-width:0; flex:1;">
-          <div style="width:46px; height:46px; border-radius:12px; background:${color}15; border:1px solid ${color}30; color:${color}; display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 0 12px ${color}15;">
-            <i class="material-icons" style="font-size:24px;">${icon}</i>
-          </div>
-          <div style="min-width:0; flex:1;">
-            <h4 style="margin:0 0 4px 0; font-size:15px; font-weight:600; color:#f8fafc; text-overflow:ellipsis; overflow:hidden; white-space:nowrap;" title="${file.title || file.originalName}">${file.title || file.originalName}</h4>
-            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-              <span style="background:${color}20; border:1px solid ${color}30; color:${color}; font-weight:700; padding:2px 8px; border-radius:6px; font-size:10px; letter-spacing:0.5px;">${label}</span>
-              <span style="font-size:12px; color:#94a3b8;">&middot; ${formatBytes(file.fileSize)}</span>
-            </div>
-          </div>
-        </div>
-        ${isFileOwner ? `
-          <div style="position:relative;">
-            <button class="icon-btn-sm btn-kebab-menu" title="Options" style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:#94a3b8; cursor:pointer; width:32px; height:32px; border-radius:8px; display:flex; align-items:center; justify-content:center; transition:all 0.2s;">
-              <i class="material-icons" style="font-size:18px;">more_vert</i>
+      <!-- Card Top: Single-Line Title & 3-Dots Menu -->
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+        <h4 style="margin:0; font-size:14px; font-weight:600; color:#f8fafc; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; flex:1; min-width:0;" title="${file.title || file.originalName}">${file.title || file.originalName}</h4>
+        
+        <div style="position:relative; flex-shrink:0;">
+          <button class="icon-btn-sm btn-kebab-menu" title="Actions" style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:#94a3b8; cursor:pointer; width:30px; height:30px; border-radius:8px; display:flex; align-items:center; justify-content:center; transition:all 0.2s;">
+            <i class="material-icons" style="font-size:18px;">more_vert</i>
+          </button>
+          
+          <!-- 3-Dots Dropdown with EXACT 3 Actions: View, Download, Edit -->
+          <div class="kebab-dropdown-menu" style="display:none; position:absolute; right:0; top:34px; background:#0f172a; border:1px solid #334155; border-radius:10px; box-shadow:0 10px 25px rgba(0,0,0,0.5); z-index:100; min-width:130px; overflow:hidden; padding:4px;">
+            <button class="btn-open-file" style="width:100%; text-align:left; background:transparent; border:none; color:#f8fafc; padding:8px 12px; font-size:12px; font-weight:500; cursor:pointer; display:flex; align-items:center; gap:8px; border-radius:6px;">
+              <i class="material-icons" style="font-size:15px; color:#3b82f6;">visibility</i> View
             </button>
-            <div class="kebab-dropdown-menu" style="display:none; position:absolute; right:0; top:36px; background:#0f172a; border:1px solid #334155; border-radius:10px; box-shadow:0 10px 25px rgba(0,0,0,0.5); z-index:100; min-width:140px; overflow:hidden; padding:4px;">
-              <button class="btn-edit-file" style="width:100%; text-align:left; background:transparent; border:none; color:#f8fafc; padding:8px 12px; font-size:12px; font-weight:500; cursor:pointer; display:flex; align-items:center; gap:8px; border-radius:6px;">
-                <i class="material-icons" style="font-size:15px; color:#3b82f6;">edit</i> Edit Details
-              </button>
-              <button class="btn-delete-file" style="width:100%; text-align:left; background:transparent; border:none; color:#ef4444; padding:8px 12px; font-size:12px; font-weight:500; cursor:pointer; display:flex; align-items:center; gap:8px; border-radius:6px;">
-                <i class="material-icons" style="font-size:15px; color:#ef4444;">delete</i> Delete File
-              </button>
-            </div>
+            <button class="btn-download-file" style="width:100%; text-align:left; background:transparent; border:none; color:#f8fafc; padding:8px 12px; font-size:12px; font-weight:500; cursor:pointer; display:flex; align-items:center; gap:8px; border-radius:6px;">
+              <i class="material-icons" style="font-size:15px; color:#10b981;">download</i> Download
+            </button>
+            <button class="btn-edit-file" style="width:100%; text-align:left; background:transparent; border:none; color:#f8fafc; padding:8px 12px; font-size:12px; font-weight:500; cursor:pointer; display:flex; align-items:center; gap:8px; border-radius:6px;">
+              <i class="material-icons" style="font-size:15px; color:#f59e0b;">edit</i> Edit
+            </button>
           </div>
-        ` : ''}
-      </div>
-
-      <div style="margin-top:12px; padding-top:10px; border-top:1px dashed rgba(255,255,255,0.08);">
-        ${file.description ? `<p style="font-size:12px; color:#94a3b8; margin:0 0 8px 0; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;">${file.description}</p>` : ''}
-        <div style="display:flex; justify-content:space-between; align-items:center; font-size:11px; color:#64748b;">
-          <span>Uploaded by <strong style="color:#cbd5e1;">${file.uploadedByName || 'Teacher'}</strong></span>
-          <span>${fileDate}</span>
         </div>
       </div>
 
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:14px;">
-        <button class="btn btn-open-file" style="padding:9px; font-size:12px; font-weight:600; background:rgba(59, 130, 246, 0.12); border:1px solid rgba(59, 130, 246, 0.3); color:#60a5fa; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; gap:6px; cursor:pointer; transition:all 0.2s;">
-          <i class="material-icons" style="font-size:16px;">visibility</i> View
-        </button>
-        <button class="btn btn-download-file" style="padding:9px; font-size:12px; font-weight:600; background:rgba(30, 41, 59, 0.8); border:1px solid rgba(255, 255, 255, 0.1); color:#e2e8f0; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; gap:6px; cursor:pointer; transition:all 0.2s;">
-          <i class="material-icons" style="font-size:16px;">download</i> Download
-        </button>
-      </div>
+      <!-- Card Middle: Visual First-Page/Cover Thumbnail -->
+      ${previewHtml}
     `;
 
-    // Event listeners
-    card.querySelector('.btn-open-file').onclick = () => openClassroomFile(classroomId, file);
-    card.querySelector('.btn-download-file').onclick = () => downloadClassroomFile(classroomId, file);
-
-    if (isFileOwner) {
-      const kebabBtn = card.querySelector('.btn-kebab-menu');
-      const menu = card.querySelector('.kebab-dropdown-menu');
-      if (kebabBtn && menu) {
-        kebabBtn.onclick = (e) => {
-          e.stopPropagation();
-          const isShown = menu.style.display === 'block';
-          document.querySelectorAll('.kebab-dropdown-menu').forEach(m => m.style.display = 'none');
-          menu.style.display = isShown ? 'none' : 'block';
-        };
+    // Click card thumbnail area opens file
+    card.onclick = (e) => {
+      if (!e.target.closest('.btn-kebab-menu') && !e.target.closest('.kebab-dropdown-menu')) {
+        openClassroomFile(classroomId, file);
       }
-      const editBtn = card.querySelector('.btn-edit-file');
-      if (editBtn) editBtn.onclick = (e) => {
+    };
+
+    // 3-Dots Actions
+    const kebabBtn = card.querySelector('.btn-kebab-menu');
+    const menu = card.querySelector('.kebab-dropdown-menu');
+    if (kebabBtn && menu) {
+      kebabBtn.onclick = (e) => {
         e.stopPropagation();
-        if (menu) menu.style.display = 'none';
-        editClassroomFile(classroomId, file);
-      };
-      const delBtn = card.querySelector('.btn-delete-file');
-      if (delBtn) delBtn.onclick = (e) => {
-        e.stopPropagation();
-        if (menu) menu.style.display = 'none';
-        deleteClassroomFile(classroomId, file);
+        const isShown = menu.style.display === 'block';
+        document.querySelectorAll('.kebab-dropdown-menu').forEach(m => m.style.display = 'none');
+        menu.style.display = isShown ? 'none' : 'block';
       };
     }
+
+    const viewBtn = card.querySelector('.btn-open-file');
+    if (viewBtn) viewBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (menu) menu.style.display = 'none';
+      openClassroomFile(classroomId, file);
+    };
+
+    const dlBtn = card.querySelector('.btn-download-file');
+    if (dlBtn) dlBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (menu) menu.style.display = 'none';
+      downloadClassroomFile(classroomId, file);
+    };
+
+    const editBtn = card.querySelector('.btn-edit-file');
+    if (editBtn) editBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (menu) menu.style.display = 'none';
+      editClassroomFile(classroomId, file);
+    };
 
     grid.appendChild(card);
   });
