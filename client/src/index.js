@@ -8433,19 +8433,16 @@ function renderFilesTableRows(grid, pageFiles, classroomId, isTeacherUser, class
       <td style="width:16%; padding:12px;color:#94a3b8;font-size:12px;white-space:nowrap;">${esc(formatFileDate(file.createdAt))}</td>
       <td style="width:8%; padding:12px;color:#94a3b8;font-size:12px;white-space:nowrap;">${formatBytes(file.fileSize)}</td>
       <td style="width:12%; padding:12px 16px; text-align:right;">
-        <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;white-space:nowrap;position:relative;">
-          <button class="icon-btn-sm" data-files-action="view" title="View file" style="${quickBtn}"><i class="material-icons" style="font-size:16px;">visibility</i></button>
-          <button class="icon-btn-sm" data-files-action="download" title="Download file" style="${quickBtn}"><i class="material-icons" style="font-size:16px;">download</i></button>
-          ${isTeacherUser ? `
+        <div style="display:flex;align-items:center;justify-content:flex-end;white-space:nowrap;position:relative;">
           <div style="position:relative;flex-shrink:0;">
-            <button class="icon-btn-sm btn-kebab-menu" data-files-action="kebab" title="More actions" style="${quickBtn}"><i class="material-icons" style="font-size:16px;">more_vert</i></button>
-            <div class="kebab-dropdown-menu" style="display:none;position:absolute;right:0;top:32px;background:#0f172a;border:1px solid #334155;border-radius:10px;box-shadow:0 10px 25px rgba(0,0,0,0.5);z-index:120;min-width:170px;overflow:hidden;padding:4px;">
+            <button class="icon-btn-sm btn-kebab-menu" data-files-action="kebab" title="More options" style="${quickBtn}"><i class="material-icons" style="font-size:16px;">more_vert</i></button>
+            <div class="kebab-dropdown-menu" style="display:none;position:absolute;right:0;top:32px;background:#0e1626;border:1px solid #334155;border-radius:12px;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);z-index:120;min-width:170px;overflow:hidden;padding:6px;">
               <button class="btn-open-file" data-files-action="view" style="${menuBtn}"><span style="font-size:13px;">👁️</span> View File</button>
-              <button class="btn-edit-file" data-files-action="edit" style="${menuBtn}"><span style="font-size:13px;">✏️</span> Edit Lecture / Title</button>
+              ${isTeacherUser ? `<button class="btn-edit-file" data-files-action="edit" style="${menuBtn}"><span style="font-size:13px;">✏️</span> Edit Details</button>` : ''}
               <button class="btn-download-file" data-files-action="download" style="${menuBtn}"><span style="font-size:13px;">⬇️</span> Download</button>
-              <button class="btn-delete-file" data-files-action="delete" style="${menuBtn};color:#ef4444;"><span style="font-size:13px;">🗑️</span> Delete File</button>
+              ${isTeacherUser ? `<button class="btn-delete-file" data-files-action="delete" style="${menuBtn};color:#ef4444;"><span style="font-size:13px;">🗑️</span> Delete File</button>` : ''}
             </div>
-          </div>` : ''}
+          </div>
         </div>
       </td>`;
 
