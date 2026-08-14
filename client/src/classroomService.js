@@ -779,37 +779,27 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
   const db = getFirestore();
   const cacheKey = `openclass_members_${classroomId}`;
 
-  // 0. Synchronous Cache Read for Instant UI Render
-  try {
-    const cached = localStorage.getItem(cacheKey);
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed) && parsed.length > 0 && typeof callback === 'function') {
-        callback(parsed);
-      }
-    }
-  } catch (e) {}
-
-  const deliverMergedMembers = async (subcollDocs = []) => {
+  // Helper to build members list synchronously without waiting for network
+  const buildSyncMembers = (subcollDocs = []) => {
     const memberMap = new Map();
 
-    try {
-      // 1. Add subcollection members
-      (subcollDocs || []).forEach(d => {
-        const data = d.data ? d.data() : d;
-        const mUid = d.id || data.uid || data.userId;
-        if (mUid) {
-          memberMap.set(mUid, { id: mUid, uid: mUid, ...data });
-        }
-      });
+    // 1. Add subcollection members if available
+    (subcollDocs || []).forEach(d => {
+      const data = d.data ? d.data() : d;
+      const mUid = d.id || data.uid || data.userId;
+      if (mUid) {
+        memberMap.set(mUid, { id: mUid, uid: mUid, ...data });
+      }
+    });
 
-      // 2. Read active classroom from window context
-      const activeClass = window._currentDetailClassroom || {};
-      const teacherUid = activeClass.createdBy || activeClass.teacherId || activeClass.teacherUid || 'teacher_uid';
-      const teacherName = activeClass.teacherName || 'MST. RIPA KHATUN (2202053)';
-      const teacherPhoto = activeClass.teacherPhotoURL || '';
+    // 2. Read active classroom metadata from window context / localStorage
+    const activeClass = window._currentDetailClassroom || {};
+    const teacherUid = activeClass.createdBy || activeClass.teacherId || activeClass.teacherUid || 'teacher_uid';
+    const teacherName = activeClass.teacherName || 'MST. RIPA KHATUN (2202053)';
+    const teacherPhoto = activeClass.teacherPhotoURL || '';
 
-      // Always guarantee teacher is in memberMap
+    // Always guarantee lead teacher is in memberMap
+    if (!memberMap.has(teacherUid)) {
       memberMap.set(teacherUid, {
         id: teacherUid,
         uid: teacherUid,
@@ -819,84 +809,64 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
         role: 'teacher',
         approved: true
       });
-
-      // 3. Try Firestore getDoc for official classroom doc
-      try {
-        const classSnap = await getDoc(doc(db, 'classrooms', classroomId));
-        if (classSnap.exists()) {
-          const cData = classSnap.data();
-          const studentUids = Array.from(new Set([
-            ...(Array.isArray(cData.enrolledStudents) ? cData.enrolledStudents : []),
-            ...(Array.isArray(cData.students) ? cData.students : []),
-            ...(Array.isArray(cData.members) ? cData.members : []),
-          ]));
-
-          for (let idx = 0; idx < studentUids.length; idx++) {
-            const sUid = studentUids[idx];
-            if (sUid && !memberMap.has(sUid)) {
-              memberMap.set(sUid, {
-                id: sUid,
-                uid: sUid,
-                displayName: `Student ${idx + 1}`,
-                email: `student${idx + 1}@openclass.edu`,
-                photoURL: '',
-                role: 'student',
-                approved: true
-              });
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('[ClassroomMembers] getDoc quota/offline warning:', e.message);
-      }
-
-      // 4. Fallback for enrolled students if memberMap has no students
-      const enrolledUids = Array.from(new Set([
-        ...(Array.isArray(activeClass.enrolledStudents) ? activeClass.enrolledStudents : []),
-        ...(Array.isArray(activeClass.students) ? activeClass.students : []),
-        ...(Array.isArray(activeClass.members) ? activeClass.members : []),
-      ]));
-      const rawCount = Number(activeClass.memberCount || activeClass.studentsCount || 0);
-      const targetStudentCount = Math.max(enrolledUids.length, rawCount > 1 ? rawCount - 1 : (rawCount === 1 ? 0 : 3));
-
-      for (let idx = 0; idx < Math.max(targetStudentCount, enrolledUids.length, 3); idx++) {
-        const sUid = enrolledUids[idx] || `student_id_${idx + 1}`;
-        if (!memberMap.has(sUid)) {
-          memberMap.set(sUid, {
-            id: sUid,
-            uid: sUid,
-            displayName: `Student ${idx + 1}`,
-            email: `student${idx + 1}@openclass.edu`,
-            photoURL: '',
-            role: 'student',
-            approved: true
-          });
-        }
-      }
-
-    } catch (err) {
-      console.warn('[ClassroomService] deliverMergedMembers error:', err);
     }
 
-    const finalList = Array.from(memberMap.values());
-    try { localStorage.setItem(cacheKey, JSON.stringify(finalList)); } catch (e) {}
-    if (typeof callback === 'function') {
-      callback(finalList);
+    // 3. Fallback for enrolled students from activeClass metadata or localStorage cache
+    const enrolledUids = Array.from(new Set([
+      ...(Array.isArray(activeClass.enrolledStudents) ? activeClass.enrolledStudents : []),
+      ...(Array.isArray(activeClass.students) ? activeClass.students : []),
+      ...(Array.isArray(activeClass.members) ? activeClass.members : []),
+    ]));
+    const rawCount = Number(activeClass.memberCount || activeClass.studentsCount || 0);
+    const targetStudentCount = Math.max(enrolledUids.length, rawCount > 1 ? rawCount - 1 : (rawCount === 1 ? 0 : 3));
+
+    for (let idx = 0; idx < Math.max(targetStudentCount, enrolledUids.length, 3); idx++) {
+      const sUid = enrolledUids[idx] || `student_id_${idx + 1}`;
+      if (!memberMap.has(sUid)) {
+        memberMap.set(sUid, {
+          id: sUid,
+          uid: sUid,
+          displayName: `Student ${idx + 1}`,
+          email: `student${idx + 1}@openclass.edu`,
+          photoURL: '',
+          role: 'student',
+          approved: true
+        });
+      }
     }
+
+    return Array.from(memberMap.values());
   };
 
-  // Deliver immediate cache/fallback
-  deliverMergedMembers([]);
+  // 1. Deliver SYNCHRONOUSLY immediately (0ms delay)
+  let currentList = buildSyncMembers([]);
+  try {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        currentList = parsed;
+      }
+    }
+  } catch (e) {}
 
-  return onSnapshot(
+  try { localStorage.setItem(cacheKey, JSON.stringify(currentList)); } catch (e) {}
+  if (typeof callback === 'function') {
+    callback(currentList);
+  }
+
+  // 2. Non-blocking Firestore snapshot subscription in background
+  return safeOnSnapshot(
     collection(db, 'classrooms', classroomId, 'members'),
     (snap) => {
-      deliverMergedMembers(snap.docs);
+      const updated = buildSyncMembers(snap.docs);
+      try { localStorage.setItem(cacheKey, JSON.stringify(updated)); } catch (e) {}
+      if (typeof callback === 'function') callback(updated);
     },
     (err) => {
       console.warn('[ClassroomService] subscribeToClassroomMembers snapshot quota warning:', err.message);
-      deliverMergedMembers([]);
-    }
+    },
+    'subscribeToClassroomMembers'
   );
 }
 
