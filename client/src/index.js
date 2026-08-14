@@ -7494,15 +7494,36 @@ export async function fetchAndRenderClassroomFiles(classroomId) {
   let files = null;
   let isCachedData = false;
 
+  // 1. Try Express API
   try {
     const url = `/api/classrooms/${classroomId}/files?q=${encodeURIComponent(searchVal)}&category=${encodeURIComponent(categoryVal)}&sort=${encodeURIComponent(sortVal)}`;
     files = await fetchWithAuth(url);
-    if (Array.isArray(files)) {
+    if (Array.isArray(files) && files.length > 0) {
       classroomFilesCache = files;
       try { localStorage.setItem(cacheKey, JSON.stringify(files)); } catch (e) {}
+    } else {
+      files = null;
     }
   } catch (err) {
-    console.warn('[ClassroomFiles] Fetch error, attempting cache fallback:', err);
+    console.warn('[ClassroomFiles] API fetch warning, attempting Firestore & Cache fallback:', err);
+  }
+
+  // 2. Firestore Direct Query Fallback
+  if (!files || !Array.isArray(files) || files.length === 0) {
+    try {
+      const db = getFirestore();
+      const filesSnap = await getDocs(collection(db, 'classrooms', classroomId, 'files'));
+      if (!filesSnap.empty) {
+        files = filesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        try { localStorage.setItem(cacheKey, JSON.stringify(files)); } catch (e) {}
+      }
+    } catch (fsErr) {
+      console.warn('[ClassroomFiles] Firestore query warning:', fsErr);
+    }
+  }
+
+  // 3. LocalStorage Cache Fallback
+  if (!files || !Array.isArray(files) || files.length === 0) {
     try {
       const stored = localStorage.getItem(cacheKey);
       if (stored) {
@@ -7510,23 +7531,6 @@ export async function fetchAndRenderClassroomFiles(classroomId) {
         isCachedData = true;
       }
     } catch (e) {}
-
-    if (!files) {
-      grid.innerHTML = `
-        <div class="empty-state-sm" style="text-align:center; padding:50px 20px; color:var(--text-muted); grid-column:1/-1;">
-          <div style="width:56px; height:56px; border-radius:50%; background:rgba(239,68,68,0.1); color:var(--danger); display:flex; align-items:center; justify-content:center; margin:0 auto 14px auto;">
-            <i class="material-icons" style="font-size:30px;">cloud_off</i>
-          </div>
-          <h3 style="margin:0 0 6px 0; font-size:15px; color:var(--text-main);">Could not load files</h3>
-          <p style="font-size:13px; color:var(--text-muted); margin:0 0 16px 0; max-width:400px; margin-left:auto; margin-right:auto;">
-            ${describeApiError(err)}
-          </p>
-          <button type="button" class="btn btn-primary" onclick="window.fetchAndRenderClassroomFiles && window.fetchAndRenderClassroomFiles('${classroomId}')" style="display:inline-flex; align-items:center; gap:6px; margin:0 auto;">
-            <i class="material-icons" style="font-size:16px;">refresh</i> Retry Loading
-          </button>
-        </div>`;
-      return;
-    }
   }
 
   if (!files || files.length === 0) {

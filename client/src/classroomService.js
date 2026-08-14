@@ -798,13 +798,14 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
         
         // Add teacher
         const tUid = cData.createdBy || cData.teacherId || cData.teacherUid;
-        if (tUid && !memberMap.has(tUid)) {
+        if (tUid) {
+          const existingT = memberMap.get(tUid) || {};
           memberMap.set(tUid, {
             id: tUid,
             uid: tUid,
-            displayName: cData.teacherName || 'Teacher',
-            email: cData.teacherEmail || '',
-            photoURL: cData.teacherPhotoURL || '',
+            displayName: cData.teacherName || existingT.displayName || 'Teacher',
+            email: cData.teacherEmail || existingT.email || '',
+            photoURL: cData.teacherPhotoURL || existingT.photoURL || '',
             role: 'teacher',
             approved: true
           });
@@ -850,10 +851,15 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
 
     // 3. Deliver list
     const finalList = Array.from(memberMap.values());
-    callback(finalList);
+    if (typeof callback === 'function') {
+      callback(finalList);
+    }
   };
 
-  return safeOnSnapshot(
+  // Run immediate fetch on call
+  deliverMergedMembers([]);
+
+  return onSnapshot(
     collection(db, 'classrooms', classroomId, 'members'),
     (snap) => {
       deliverMergedMembers(snap.docs);
@@ -861,8 +867,7 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
     (err) => {
       console.warn('[ClassroomService] subscribeToClassroomMembers fallback:', err);
       deliverMergedMembers([]);
-    },
-    'subscribeToClassroomMembers'
+    }
   );
 }
 
