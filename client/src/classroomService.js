@@ -772,10 +772,76 @@ export function subscribeToUserClassrooms(uid, role, callback) {
 }
 
 export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
+  const db = getFirestore();
+  
+  const deliverMergedMembers = async (subcollDocs = []) => {
+    const memberMap = new Map();
+
+    // 1. Add subcollection members
+    subcollDocs.forEach(d => {
+      const data = d.data ? d.data() : d;
+      const mUid = d.id || data.uid || data.userId;
+      if (mUid) memberMap.set(mUid, { id: mUid, uid: mUid, ...data });
+    });
+
+    // 2. Fetch classroom doc to get teacher & enrolledStudents/members arrays
+    try {
+      const classSnap = await getDoc(doc(db, 'classrooms', classroomId));
+      if (classSnap.exists()) {
+        const cData = classSnap.data();
+        
+        // Add teacher
+        const tUid = cData.createdBy || cData.teacherId || cData.teacherUid;
+        if (tUid && !memberMap.has(tUid)) {
+          memberMap.set(tUid, {
+            id: tUid,
+            uid: tUid,
+            displayName: cData.teacherName || 'Teacher',
+            email: cData.teacherEmail || '',
+            photoURL: cData.teacherPhotoURL || '',
+            role: 'teacher',
+            approved: true
+          });
+        }
+
+        // Add enrolled students
+        const studentUids = Array.from(new Set([
+          ...(Array.isArray(cData.enrolledStudents) ? cData.enrolledStudents : []),
+          ...(Array.isArray(cData.students) ? cData.students : []),
+          ...(Array.isArray(cData.members) ? cData.members : []),
+        ]));
+
+        for (const sUid of studentUids) {
+          if (!memberMap.has(sUid)) {
+            memberMap.set(sUid, {
+              id: sUid,
+              uid: sUid,
+              displayName: sUid === tUid ? (cData.teacherName || 'Teacher') : 'Enrolled Student',
+              email: '',
+              role: sUid === tUid ? 'teacher' : 'student',
+              approved: true
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[ClassroomMembers] Error fetching classroom doc fallback:', e);
+    }
+
+    // 3. Deliver list
+    const finalList = Array.from(memberMap.values());
+    callback(finalList);
+  };
+
   return safeOnSnapshot(
-    query(collection(getFirestore(), 'classrooms', classroomId, 'members'), orderBy('joinedAt', 'asc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-    (err) => console.warn('[ClassroomService] subscribeToClassroomMembers quota warning:', err),
+    collection(db, 'classrooms', classroomId, 'members'),
+    (snap) => {
+      deliverMergedMembers(snap.docs);
+    },
+    (err) => {
+      console.warn('[ClassroomService] subscribeToClassroomMembers fallback:', err);
+      deliverMergedMembers([]);
+    },
     'subscribeToClassroomMembers'
   );
 }

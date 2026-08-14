@@ -2940,6 +2940,11 @@ function switchDetailTab(tabName) {
   if (tabEl) tabEl.classList.add('active');
   const panel = document.getElementById(`detail-panel-${tabName}`);
   if (panel) { panel.style.display = 'block'; panel.style.animation = 'none'; void panel.offsetHeight; panel.style.animation = ''; }
+
+  const currentClassId = window._currentDetailClassroom?.classroomId || window._currentDetailClassroom?.id || detailCurrentClassroomId;
+  if (tabName === 'files' && currentClassId) {
+    fetchAndRenderClassroomFiles(currentClassId);
+  }
 }
 
 document.querySelectorAll('.detail-tab').forEach(tab => {
