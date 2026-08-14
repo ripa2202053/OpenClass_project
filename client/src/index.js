@@ -33,6 +33,10 @@ import {
   uploadBytesResumable,
   getDownloadURL,
 } from 'firebase/storage';
+import { safeOnSnapshot, isQuotaExceededError, createRequestCache } from './utils/firestoreGuard.js';
+
+const classworkCache = createRequestCache(30000);
+
 import {
   getMessaging,
   getToken,
@@ -717,10 +721,9 @@ function applyRoleBasedUI(profile) {
     badge.className = 'user-card-role role-badge ' + (isUserTeacher ? 'teacher' : 'student');
   }
 
-  // Dashboard switching
+  // Dashboard switching: Teachers get Teacher Dashboard, Students get Student Dashboard
   const teacherDash = document.getElementById('tab-dashboard');
   const studentDash = document.getElementById('tab-dashboard-student');
-  const activeTab = document.querySelector('.tab-content.active-tab');
 
   if (isUserTeacher) {
     if (teacherDash) {
@@ -731,7 +734,7 @@ function applyRoleBasedUI(profile) {
       studentDash.style.display = 'none';
       studentDash.classList.remove('active-tab');
     }
-  } else if (isUserStudent) {
+  } else {
     if (teacherDash) {
       teacherDash.style.display = 'none';
       teacherDash.classList.remove('active-tab');
@@ -831,15 +834,20 @@ async function authStateObserver(user) {
       }
     }
 
-    // If still no profile, this is an error - sign out
+    // If Firestore fetch fails or is quota-blocked, construct fallback profile from auth & storage
     if (!currentUserProfile) {
-      console.error('User profile not found in Firestore after retry');
-      signOutUser();
-      showAuth();
-      return;
+      currentUserProfile = getProfileFromStorage(user.uid) || {
+        uid: user.uid,
+        displayName: user.displayName || user.email?.split('@')[0] || 'User',
+        email: user.email || '',
+        photoURL: user.photoURL || '',
+        role: localStorage.getItem('openclass_user_role') || 'student',
+        status: 'approved',
+        isApproved: true
+      };
     }
 
-    // Persist profile + role for session persistence
+    window.currentUserProfile = currentUserProfile;
     saveProfileToStorage(currentUserProfile);
 
     var profilePicUrl = getProfilePicUrl();
@@ -859,15 +867,23 @@ async function authStateObserver(user) {
     // reflect instantly. Account-level approval was removed, so no pending/
     // rejected modal is shown here.
     if (userStatusUnsub) userStatusUnsub();
-    userStatusUnsub = onSnapshot(doc(getFirestore(), 'users', user.uid), (snap) => {
-      if (!snap.exists()) return;
-      const updated = { uid: user.uid, ...snap.data() };
-      currentUserProfile = updated;
-      window.currentUserProfile = updated;
-      saveProfileToStorage(updated);
-      populateProfileForm(updated);
-      applyRoleBasedUI(updated);
-    });
+    userStatusUnsub = safeOnSnapshot(
+      doc(getFirestore(), 'users', user.uid),
+      (snap) => {
+        if (!snap.exists()) return;
+        const updated = { uid: user.uid, ...snap.data() };
+        if (currentUserProfile && JSON.stringify(currentUserProfile) === JSON.stringify(updated)) {
+          return; // Skip re-rendering if profile data has not changed
+        }
+        currentUserProfile = updated;
+        window.currentUserProfile = updated;
+        saveProfileToStorage(updated);
+        populateProfileForm(updated);
+        applyRoleBasedUI(updated);
+      },
+      (err) => console.warn('[Index] userStatusUnsub quota warning:', err),
+      'userStatusUnsub'
+    );
 
     if (classroomsUnsubscribe) classroomsUnsubscribe();
     classroomsUnsubscribe = subscribeToUserClassrooms(user.uid, currentUserProfile?.role || '', renderClassrooms);
@@ -7508,6 +7524,8 @@ export async function fetchAndRenderClassroomFiles(classroomId) {
   const uploadBtn = document.getElementById('btn-upload-classroom-file');
   if (!grid || !classroomId) return;
 
+  window.fetchAndRenderClassroomFiles = fetchAndRenderClassroomFiles;
+
   const isTeacherUser = currentUserProfile && isTeacher(currentUserProfile);
   const currentUid = getAuth().currentUser?.uid;
   const isFileOwner = isTeacherUser && detailCurrentClassroomCreatedBy === currentUid;
@@ -7517,88 +7535,134 @@ export async function fetchAndRenderClassroomFiles(classroomId) {
   const categoryVal = document.getElementById('files-category-filter')?.value || 'all';
   const sortVal = document.getElementById('files-sort-select')?.value || 'newest';
 
+  const cacheKey = `openclass_files_${classroomId}`;
+
   grid.innerHTML = '<div class="empty-state-sm" style="text-align:center; padding:60px 0; color:var(--text-muted); grid-column:1/-1;"><i class="material-icons rotating" style="font-size:32px; display:block; margin-bottom:8px;">sync</i> Loading files & resources...</div>';
+
+  let files = null;
+  let isCachedData = false;
 
   try {
     const url = `/api/classrooms/${classroomId}/files?q=${encodeURIComponent(searchVal)}&category=${encodeURIComponent(categoryVal)}&sort=${encodeURIComponent(sortVal)}`;
-    const files = await fetchWithAuth(url);
-    classroomFilesCache = files || [];
+    files = await fetchWithAuth(url);
+    if (Array.isArray(files)) {
+      classroomFilesCache = files;
+      try { localStorage.setItem(cacheKey, JSON.stringify(files)); } catch (e) {}
+    }
+  } catch (err) {
+    console.warn('[ClassroomFiles] Fetch error, attempting cache fallback:', err);
+    try {
+      const stored = localStorage.getItem(cacheKey);
+      if (stored) {
+        files = JSON.parse(stored);
+        isCachedData = true;
+      }
+    } catch (e) {}
 
-    if (!files || files.length === 0) {
-      const emptyText = isFileOwner
-        ? 'No files uploaded yet. Upload your first classroom resource.'
-        : 'Your teacher has not uploaded any files yet.';
+    if (!files) {
       grid.innerHTML = `
-        <div class="empty-state-sm" style="text-align:center; padding:60px 20px; color:var(--text-muted); grid-column:1/-1;">
-          <div style="width:64px; height:64px; border-radius:50%; background:rgba(59,130,246,0.1); color:var(--primary); display:flex; align-items:center; justify-content:center; margin:0 auto 16px auto; font-size:32px;">
-            <i class="material-icons" style="font-size:36px;">folder_open</i>
+        <div class="empty-state-sm" style="text-align:center; padding:50px 20px; color:var(--text-muted); grid-column:1/-1;">
+          <div style="width:56px; height:56px; border-radius:50%; background:rgba(239,68,68,0.1); color:var(--danger); display:flex; align-items:center; justify-content:center; margin:0 auto 14px auto;">
+            <i class="material-icons" style="font-size:30px;">cloud_off</i>
           </div>
-          <h3 style="margin:0 0 6px 0; font-size:16px; color:var(--text-main);">📁 No files yet</h3>
-          <p style="font-size:13px; color:var(--text-muted); margin:0;">${emptyText}</p>
+          <h3 style="margin:0 0 6px 0; font-size:15px; color:var(--text-main);">Could not load files</h3>
+          <p style="font-size:13px; color:var(--text-muted); margin:0 0 16px 0; max-width:400px; margin-left:auto; margin-right:auto;">
+            ${describeApiError(err)}
+          </p>
+          <button type="button" class="btn btn-primary" onclick="window.fetchAndRenderClassroomFiles && window.fetchAndRenderClassroomFiles('${classroomId}')" style="display:inline-flex; align-items:center; gap:6px; margin:0 auto;">
+            <i class="material-icons" style="font-size:16px;">refresh</i> Retry Loading
+          </button>
         </div>`;
       return;
     }
-
-    grid.innerHTML = '';
-    files.forEach(file => {
-      const { icon, color, label } = getFileIconAndColor(file.fileType, file.mimeType);
-      const card = document.createElement('div');
-      card.className = 'activity-card animate-fade';
-      card.style.cssText = 'background:var(--card-bg); border:1px solid var(--border); border-radius:14px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; position:relative; box-shadow:var(--shadow-soft);';
-
-      const fileDate = file.createdAt ? new Date(file.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recently';
-
-      card.innerHTML = `
-        <div style="display:flex; align-items:flex-start; gap:14px;">
-          <div style="width:44px; height:44px; border-radius:10px; background:${color}15; color:${color}; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
-            <i class="material-icons" style="font-size:24px;">${icon}</i>
-          </div>
-          <div style="flex:1; min-width:0;">
-            <h4 style="margin:0 0 4px 0; font-size:15px; font-weight:600; color:var(--text-main); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;" title="${file.title || file.originalName}">${file.title || file.originalName}</h4>
-            <div style="font-size:12px; color:var(--text-muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-              <span style="background:${color}20; color:${color}; font-weight:700; padding:2px 6px; border-radius:4px; font-size:10px;">${label}</span>
-              <span>&middot; ${formatBytes(file.fileSize)}</span>
-              <span>&middot; ${fileDate}</span>
-            </div>
-            ${file.description ? `<p style="font-size:12px; color:var(--text-muted); margin:6px 0 0 0; line-height:1.4;">${file.description}</p>` : ''}
-            <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
-              Uploaded by <strong>${file.uploadedByName || 'Teacher'}</strong>
-            </div>
-          </div>
-        </div>
-
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-top:8px; padding-top:12px; border-top:1px solid var(--border); gap:8px;">
-          <div style="display:flex; gap:8px;">
-            <button class="btn btn-primary btn-open-file" style="padding:6px 12px; font-size:12px; display:inline-flex; align-items:center; gap:4px;">
-              <i class="material-icons" style="font-size:14px;">visibility</i> Open
-            </button>
-            <button class="btn btn-outline btn-download-file" style="padding:6px 12px; font-size:12px; display:inline-flex; align-items:center; gap:4px;">
-              <i class="material-icons" style="font-size:14px;">download</i> Download
-            </button>
-          </div>
-          ${isFileOwner ? `
-            <div style="display:flex; gap:4px;">
-              <button class="icon-btn-sm btn-edit-file" title="Edit Metadata" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; padding:4px;"><i class="material-icons" style="font-size:16px;">edit</i></button>
-              <button class="icon-btn-sm btn-delete-file" title="Delete File" style="background:transparent; border:none; color:var(--danger); cursor:pointer; padding:4px;"><i class="material-icons" style="font-size:16px;">delete</i></button>
-            </div>
-          ` : ''}
-        </div>
-      `;
-
-      // Event listeners
-      card.querySelector('.btn-open-file').onclick = () => openClassroomFile(classroomId, file);
-      card.querySelector('.btn-download-file').onclick = () => downloadClassroomFile(classroomId, file);
-
-      if (isFileOwner) {
-        card.querySelector('.btn-edit-file').onclick = () => editClassroomFile(classroomId, file);
-        card.querySelector('.btn-delete-file').onclick = () => deleteClassroomFile(classroomId, file);
-      }
-
-      grid.appendChild(card);
-    });
-  } catch (err) {
-    grid.innerHTML = `<div class="empty-state-sm" style="text-align:center; padding:40px; color:var(--danger); grid-column:1/-1;">Error loading files: ${describeApiError(err)}</div>`;
   }
+
+  if (!files || files.length === 0) {
+    const emptyText = isFileOwner
+      ? 'No files uploaded yet. Upload your first classroom resource.'
+      : 'Your teacher has not uploaded any files yet.';
+    grid.innerHTML = `
+      <div class="empty-state-sm" style="text-align:center; padding:60px 20px; color:var(--text-muted); grid-column:1/-1;">
+        <div style="width:64px; height:64px; border-radius:50%; background:rgba(59,130,246,0.1); color:var(--primary); display:flex; align-items:center; justify-content:center; margin:0 auto 16px auto; font-size:32px;">
+          <i class="material-icons" style="font-size:36px;">folder_open</i>
+        </div>
+        <h3 style="margin:0 0 6px 0; font-size:16px; color:var(--text-main);">📁 No files yet</h3>
+        <p style="font-size:13px; color:var(--text-muted); margin:0;">${emptyText}</p>
+      </div>`;
+    return;
+  }
+
+  grid.innerHTML = '';
+
+  if (isCachedData) {
+    const cacheBanner = document.createElement('div');
+    cacheBanner.style.cssText = 'grid-column:1/-1; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); border-radius:10px; padding:10px 14px; color:#d97706; font-size:12px; display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;';
+    cacheBanner.innerHTML = `
+      <div style="display:flex; align-items:center; gap:8px;">
+        <i class="material-icons" style="font-size:18px;">cloud_off</i>
+        <span>Showing cached files (offline or connection issue).</span>
+      </div>
+      <button class="btn btn-outline" style="padding:3px 10px; font-size:11px;" onclick="window.fetchAndRenderClassroomFiles('${classroomId}')">Retry</button>
+    `;
+    grid.appendChild(cacheBanner);
+  }
+
+  files.forEach(file => {
+    const { icon, color, label } = getFileIconAndColor(file.fileType, file.mimeType);
+    const card = document.createElement('div');
+    card.className = 'activity-card animate-fade';
+    card.style.cssText = 'background:var(--card-bg); border:1px solid var(--border); border-radius:14px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; position:relative; box-shadow:var(--shadow-soft);';
+
+    const fileDate = file.createdAt ? new Date(file.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recently';
+
+    card.innerHTML = `
+      <div style="display:flex; align-items:flex-start; gap:14px;">
+        <div style="width:44px; height:44px; border-radius:10px; background:${color}15; color:${color}; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+          <i class="material-icons" style="font-size:24px;">${icon}</i>
+        </div>
+        <div style="flex:1; min-width:0;">
+          <h4 style="margin:0 0 4px 0; font-size:15px; font-weight:600; color:var(--text-main); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;" title="${file.title || file.originalName}">${file.title || file.originalName}</h4>
+          <div style="font-size:12px; color:var(--text-muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span style="background:${color}20; color:${color}; font-weight:700; padding:2px 6px; border-radius:4px; font-size:10px;">${label}</span>
+            <span>&middot; ${formatBytes(file.fileSize)}</span>
+            <span>&middot; ${fileDate}</span>
+          </div>
+          ${file.description ? `<p style="font-size:12px; color:var(--text-muted); margin:6px 0 0 0; line-height:1.4;">${file.description}</p>` : ''}
+          <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
+            Uploaded by <strong>${file.uploadedByName || 'Teacher'}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-top:8px; padding-top:12px; border-top:1px solid var(--border); gap:8px;">
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-primary btn-open-file" style="padding:6px 12px; font-size:12px; display:inline-flex; align-items:center; gap:4px;">
+            <i class="material-icons" style="font-size:14px;">visibility</i> Open
+          </button>
+          <button class="btn btn-outline btn-download-file" style="padding:6px 12px; font-size:12px; display:inline-flex; align-items:center; gap:4px;">
+            <i class="material-icons" style="font-size:14px;">download</i> Download
+          </button>
+        </div>
+        ${isFileOwner ? `
+          <div style="display:flex; gap:4px;">
+            <button class="icon-btn-sm btn-edit-file" title="Edit Metadata" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer; padding:4px;"><i class="material-icons" style="font-size:16px;">edit</i></button>
+            <button class="icon-btn-sm btn-delete-file" title="Delete File" style="background:transparent; border:none; color:var(--danger); cursor:pointer; padding:4px;"><i class="material-icons" style="font-size:16px;">delete</i></button>
+          </div>
+        ` : ''}
+      </div>
+    `;
+
+    // Event listeners
+    card.querySelector('.btn-open-file').onclick = () => openClassroomFile(classroomId, file);
+    card.querySelector('.btn-download-file').onclick = () => downloadClassroomFile(classroomId, file);
+
+    if (isFileOwner) {
+      card.querySelector('.btn-edit-file').onclick = () => editClassroomFile(classroomId, file);
+      card.querySelector('.btn-delete-file').onclick = () => deleteClassroomFile(classroomId, file);
+    }
+
+    grid.appendChild(card);
+  });
 }
 
 function fileDownloadUrl(classroomId, file) {
@@ -7708,6 +7772,32 @@ export function initClassroomFilesModule() {
   if (catFilter) catFilter.onchange = () => { if (detailCurrentClassroomId) fetchAndRenderClassroomFiles(detailCurrentClassroomId); };
   if (sortSelect) sortSelect.onchange = () => { if (detailCurrentClassroomId) fetchAndRenderClassroomFiles(detailCurrentClassroomId); };
 
+  // Auto-detect file category on file select
+  const fileInputEl = document.getElementById('classroom-file-input');
+  if (fileInputEl) {
+    fileInputEl.onchange = () => {
+      if (fileInputEl.files && fileInputEl.files[0]) {
+        const selected = fileInputEl.files[0];
+        const ext = selected.name.split('.').pop().toLowerCase();
+        const catSelect = document.getElementById('classroom-file-category');
+        const titleInput = document.getElementById('classroom-file-title');
+
+        if (titleInput && (!titleInput.value || titleInput.value.trim() === '')) {
+          titleInput.value = selected.name.replace(/\.[^/.]+$/, '');
+        }
+
+        if (catSelect) {
+          if (ext === 'pdf') catSelect.value = 'PDF';
+          else if (['ppt', 'pptx'].includes(ext)) catSelect.value = 'Slides';
+          else if (['doc', 'docx', 'txt', 'xls', 'xlsx'].includes(ext)) catSelect.value = 'Documents';
+          else if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) catSelect.value = 'Images';
+          else if (ext === 'zip') catSelect.value = 'ZIP';
+          else catSelect.value = 'Other';
+        }
+      }
+    };
+  }
+
   // Upload button listener
   const btnUpload = document.getElementById('btn-upload-classroom-file');
   if (btnUpload) {
@@ -7715,8 +7805,10 @@ export function initClassroomFilesModule() {
       const modal = document.getElementById('modal-classroom-file-upload');
       if (modal) {
         document.getElementById('form-classroom-file-upload')?.reset();
-        document.getElementById('classroom-file-upload-alert').style.display = 'none';
-        document.getElementById('classroom-file-progress-wrapper').style.display = 'none';
+        const alertEl = document.getElementById('classroom-file-upload-alert');
+        if (alertEl) alertEl.style.display = 'none';
+        const progressWrap = document.getElementById('classroom-file-progress-wrapper');
+        if (progressWrap) progressWrap.style.display = 'none';
         modal.style.zIndex = '1000000';
         modal.style.display = 'flex';
       }
@@ -7826,6 +7918,13 @@ export function initClassroomFilesModule() {
         if (progressBar) progressBar.style.width = '100%';
         if (progressPercent) progressPercent.textContent = '100%';
 
+        if (res && res.id) {
+          const cacheKey = `openclass_files_${targetClassroomId}`;
+          const existing = classroomFilesCache.filter(f => f.id !== res.id && f.fileId !== res.fileId);
+          classroomFilesCache = [res, ...existing];
+          try { localStorage.setItem(cacheKey, JSON.stringify(classroomFilesCache)); } catch (e) {}
+        }
+
         // Notify socket
         const socket = getSocket();
         if (socket) {
@@ -7842,9 +7941,12 @@ export function initClassroomFilesModule() {
         fetchAndRenderClassroomFiles(targetClassroomId);
       } catch (err) {
         if (alertEl) {
-          alertEl.textContent = '❌ Upload failed: ' + (describeApiError(err) || 'Server error during upload');
+          const rawMsg = err && err.message ? err.message : '';
+          const friendlyMsg = rawMsg.length > 0 && !rawMsg.includes('HTTP error') ? rawMsg : describeApiError(err);
+          alertEl.textContent = '❌ Upload failed: ' + (friendlyMsg || 'Server error during upload');
           alertEl.style.display = 'block';
         }
+        if (progressWrap) progressWrap.style.display = 'none';
       } finally {
         if (submitBtn) {
           submitBtn.disabled = false;
@@ -7860,8 +7962,12 @@ export function initClassroomFilesModule() {
     const socket = getSocket();
     if (socket) {
       socket.on('file-uploaded', (data) => {
-        if (data && data.classroomId === detailCurrentClassroomId) {
+        if (data && data.classroomId === detailCurrentClassroomId && data.file) {
           showAppToast(`📎 New file uploaded: ${data.file.originalName || data.file.title}`, 'info');
+          const cacheKey = `openclass_files_${detailCurrentClassroomId}`;
+          const existing = classroomFilesCache.filter(f => f.id !== data.file.id && f.fileId !== data.file.fileId);
+          classroomFilesCache = [data.file, ...existing];
+          try { localStorage.setItem(cacheKey, JSON.stringify(classroomFilesCache)); } catch (e) {}
           fetchAndRenderClassroomFiles(detailCurrentClassroomId);
         }
       });
@@ -7926,18 +8032,39 @@ function toDateTimeLocal(ts) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-async function loadClassworkForCurrentClassroom() {
+async function loadClassworkForCurrentClassroom(forceRefresh = false) {
   const grid = document.getElementById('classwork-grid');
   const createBtn = document.getElementById('btn-create-classwork');
   const base = cwBaseUrl();
   if (!base || !grid) return;
   const isOwner = cwIsTeacherOwner();
   if (createBtn) createBtn.style.display = isOwner ? 'inline-flex' : 'none';
+
+  const cacheKey = `cw_${base}_${isOwner ? 'owner' : 'student'}`;
+  if (forceRefresh) {
+    classworkCache.set(cacheKey, null, 0);
+  }
+
+  const cached = classworkCache.get(cacheKey);
+  if (cached && !forceRefresh) {
+    renderClassworkGrid(cached, isOwner);
+    return;
+  }
+
   grid.innerHTML = '<div class="empty-state-sm" style="text-align:center; padding:40px 0; color:var(--text-muted); grid-column:1/-1;">Loading class work...</div>';
+
   try {
-    const items = await cwApi(base);
+    const items = await classworkCache.execute(cacheKey, () => cwApi(base), 30000);
     renderClassworkGrid(items, isOwner);
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('[Index] loadClassworkForCurrentClassroom quota exceeded:', err.message);
+      const stale = classworkCache.get(cacheKey);
+      if (stale) {
+        renderClassworkGrid(stale, isOwner);
+        return;
+      }
+    }
     grid.innerHTML = `<div class="empty-state-sm" style="text-align:center; padding:40px 0; color:#dc2626; grid-column:1/-1;">${cwEsc(describeApiError(err))}</div>`;
   }
 }

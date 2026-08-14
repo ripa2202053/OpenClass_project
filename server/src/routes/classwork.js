@@ -148,32 +148,54 @@ function toSerializable(doc) {
   return out;
 }
 
+import { safeServerQuery, isQuotaExceededError } from '../utils/quotaGuard.js';
+
 // GET /api/classrooms/:classId/classwork - List class work (role aware)
 router.get('/', verifyAuthToken, async (req, res) => {
+  const classId = req.params.classId || req.params.id;
+  const user = req.user;
+  const cacheKey = `server_classwork_${classId}_${user.uid}`;
+
   try {
-    const classId = req.params.classId || req.params.id;
-    const user = req.user;
-    const db = getFirestore();
+    const items = await safeServerQuery(cacheKey, async () => {
+      const db = getFirestore();
 
-    const access = await checkClassroomAccess(db, classId, user.uid);
-    if (!access.classroomData || (!access.isOwner && !access.isMember)) {
+      const access = await checkClassroomAccess(db, classId, user.uid);
+      if (!access.classroomData || (!access.isOwner && !access.isMember)) {
+        return null;
+      }
+
+      let query = db.collection('classrooms').doc(classId).collection('classwork').orderBy('createdAt', 'desc');
+      const snap = await query.get();
+
+      let classworkItems = snap.docs.map(toSerializable);
+
+      if (!access.isOwner) {
+        // Students see published items only
+        classworkItems = classworkItems.filter(w => w.published === true || w.status === 'published');
+        classworkItems = classworkItems.map(serializeForStudent);
+        try {
+          classworkItems = await attachStudentState(db, classId, user.uid, classworkItems);
+        } catch (e) {
+          if (isQuotaExceededError(e)) {
+            console.warn('[Classwork Route] Quota exceeded attaching student state.');
+          }
+        }
+      }
+
+      return classworkItems;
+    }, [], 30000);
+
+    if (items === null) {
       return res.status(403).json({ error: 'Permission denied: You are not a member of this classroom.' });
-    }
-
-    let query = db.collection('classrooms').doc(classId).collection('classwork').orderBy('createdAt', 'desc');
-    const snap = await query.get();
-
-    let items = snap.docs.map(toSerializable);
-
-    if (!access.isOwner) {
-      // Students see published items only
-      items = items.filter(w => w.published === true || w.status === 'published');
-      items = items.map(serializeForStudent);
-      items = await attachStudentState(db, classId, user.uid, items);
     }
 
     return res.json(items);
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn('[Classwork Route] Firestore RESOURCE_EXHAUSTED. Returning cached/empty items list.');
+      return res.json([]);
+    }
     console.error('Error fetching class work:', error);
     return res.status(500).json({ error: 'Failed to fetch class work', details: error.message });
   }

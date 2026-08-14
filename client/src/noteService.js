@@ -62,14 +62,18 @@ export async function deleteNote(classroomId, noteId) {
 }
 
 
+import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
+
 export function subscribeNotes(classroomId, callback) {
   const db = getFirestore();
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(db, 'classrooms', classroomId, 'notes'), orderBy('createdAt', 'desc')),
     (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       callback(list);
-    }
+    },
+    (err) => console.warn('[noteService] subscribeNotes quota warning:', err),
+    'subscribeNotes'
   );
 }
 

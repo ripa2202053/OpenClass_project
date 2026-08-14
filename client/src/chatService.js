@@ -7,6 +7,7 @@ import {
   getStorage, ref, uploadBytesResumable, getDownloadURL
 } from 'firebase/storage';
 import { getDatabase, ref as dbRef, onValue, set, onDisconnect, serverTimestamp as rtdbTimestamp, off } from 'firebase/database';
+import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
 
 export async function sendFileMessage(channelId, file, sender, text) {
   const db = getFirestore();
@@ -35,7 +36,7 @@ export async function sendFileMessage(channelId, file, sender, text) {
 }
 
 export function subscribeMessages(channelId, callback, msgLimit = 100) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(
       collection(getFirestore(), 'channels', channelId, 'messages'),
       orderBy('timestamp', 'desc'),
@@ -44,7 +45,9 @@ export function subscribeMessages(channelId, callback, msgLimit = 100) {
     (snap) => {
       const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() })).reverse();
       callback(msgs);
-    }
+    },
+    (err) => console.warn('[chatService] subscribeMessages quota warning:', err),
+    'subscribeMessages'
   );
 }
 
@@ -85,9 +88,11 @@ export async function sendMessageWithReply(channelId, msg, user, replyTo) {
 }
 
 export function subscribeChannels(callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'channels'), orderBy('lastMessage', 'desc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[chatService] subscribeChannels quota warning:', err),
+    'subscribeChannels'
   );
 }
 
@@ -110,17 +115,19 @@ export function setTyping(channelId, userId, userName, isTyping) {
 }
 
 export function subscribeTyping(channelId, callback = () => {}) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'channels', channelId, 'typing')),
     (snap) => {
       const typing = snap.docs.map(d => d.data().userName).filter(Boolean);
       if (typeof callback === 'function') callback(typing);
-    }
+    },
+    (err) => console.warn('[chatService] subscribeTyping quota warning:', err),
+    'subscribeTyping'
   );
 }
 
 export function subscribeReadReceipts(channelId, callback = () => {}) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'channels', channelId, 'readReceipts')),
     (snap) => {
       const receipts = {};
@@ -129,7 +136,9 @@ export function subscribeReadReceipts(channelId, callback = () => {}) {
         receipts[d.id] = { ...data, id: d.id };
       });
       if (typeof callback === 'function') callback(receipts);
-    }
+    },
+    (err) => console.warn('[chatService] subscribeReadReceipts quota warning:', err),
+    'subscribeReadReceipts'
   );
 }
 
@@ -172,7 +181,7 @@ export async function deleteMessage(channelId, messageId) {
 }
 
 export function searchMessages(channelId, searchText, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(
       collection(getFirestore(), 'channels', channelId, 'messages'),
       orderBy('timestamp', 'desc'),
@@ -187,7 +196,9 @@ export function searchMessages(channelId, searchText, callback) {
         (m.senderName && m.senderName.toLowerCase().includes(q))
       );
       callback(filtered.reverse());
-    }
+    },
+    (err) => console.warn('[chatService] searchMessages quota warning:', err),
+    'searchMessages'
   );
 }
 
@@ -218,12 +229,14 @@ export async function createPrivateChat(userIds, classroomId = 'global') {
 }
 
 export function subscribePrivateChats(userId, classroomId, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(
       collection(getFirestore(), 'privateChats'),
       where('userIds', 'array-contains', userId)
     ),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[chatService] subscribePrivateChats quota warning:', err),
+    'subscribePrivateChats'
   );
 }
 
@@ -308,13 +321,17 @@ export async function sendPrivateMessage(chatId, sender, text) {
 
 export function subscribePrivateMessages(chatId, callback) {
   const db = getFirestore();
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(db, 'privateChats', chatId, 'messages'), orderBy('timestamp', 'asc')),
     (snap) => {
       const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       callback(msgs);
     },
     async (err) => {
+      if (isQuotaExceededError(err)) {
+        console.warn('[chatService] subscribePrivateMessages quota exceeded:', err.message);
+        return;
+      }
       console.warn('subscribePrivateMessages error, falling back to unordered getDocs:', err);
       try {
         const snap = await getDocs(collection(db, 'privateChats', chatId, 'messages'));
@@ -324,7 +341,8 @@ export function subscribePrivateMessages(chatId, callback) {
       } catch(e) {
         console.error('Fallback getDocs messages failed:', e);
       }
-    }
+    },
+    'subscribePrivateMessages'
   );
 }
 
@@ -356,12 +374,14 @@ export async function toggleMessageReaction(chatId, messageId, emoji, userId) {
 }
 
 export function subscribeAllUserPrivateChats(userId, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(
       collection(getFirestore(), 'privateChats'),
       where('userIds', 'array-contains', userId)
     ),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[chatService] subscribeAllUserPrivateChats quota warning:', err),
+    'subscribeAllUserPrivateChats'
   );
 }
 

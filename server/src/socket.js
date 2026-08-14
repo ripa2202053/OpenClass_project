@@ -1,6 +1,11 @@
 import { Server } from 'socket.io';
 
-const ALLOWED_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'];
+const ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://open-class-project-client.vercel.app',
+  ...(process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(',').map(s => s.trim()) : [])
+];
 
 /**
  * Verifies Firebase ID Token for incoming sockets.
@@ -35,7 +40,17 @@ async function verifySocketToken(token) {
  */
 export function attachSignaling(httpServer) {
   const io = new Server(httpServer, {
-    cors: { origin: ALLOWED_ORIGINS, methods: ['GET', 'POST'] },
+    cors: {
+      origin: function (origin, callback) {
+        if (!origin || ALLOWED_ORIGINS.includes(origin) || (origin && origin.endsWith('.vercel.app'))) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      },
+      methods: ['GET', 'POST'],
+      credentials: true,
+    },
     maxHttpBufferSize: 1e6,
   });
 

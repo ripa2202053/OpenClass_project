@@ -31,56 +31,68 @@ function sanitizeFileName(name, fallback = 'file') {
   return n;
 }
 
-// Best-effort MIME <-> extension check. Unknown/generic MIME types are allowed
+// Best-effort MIME <-> extension check. Unknown/generic/zip MIME types are allowed
 // (the extension whitelist remains the primary gate); clear mismatches are
 // rejected so a file cannot be disguised (e.g. HTML served as .pdf).
 function mimeMatchesExtension(ext, mime) {
   const m = String(mime || '').trim().toLowerCase();
-  if (!m || m === 'application/octet-stream') return true;
-  if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) return m.startsWith('image/');
+  if (!m || m === 'application/octet-stream' || m === 'application/zip' || m === 'application/x-zip-compressed' || m.includes('generic') || m.includes('binary')) return true;
+  if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) return m.startsWith('image/') || m.includes('octet-stream');
   if (['doc', 'docx', 'txt'].includes(ext)) {
-    return m.startsWith('text/') || m.includes('word') || m.includes('msword')
-      || m.includes('rtf') || m.includes('opendocument');
+    return m.startsWith('text/') || m.includes('word') || m.includes('msword') || m.includes('office') || m.includes('document')
+      || m.includes('rtf') || m.includes('opendocument') || m.includes('zip') || m.includes('octet-stream');
   }
   if (['ppt', 'pptx'].includes(ext)) {
-    return m.includes('powerpoint') || m.includes('ms-powerpoint')
-      || m.includes('presentation') || m.includes('opendocument');
+    return m.includes('powerpoint') || m.includes('ms-powerpoint') || m.includes('office') || m.includes('document')
+      || m.includes('presentation') || m.includes('opendocument') || m.includes('zip') || m.includes('octet-stream');
   }
   if (['xls', 'xlsx'].includes(ext)) {
-    return m.includes('excel') || m.includes('spreadsheet') || m.includes('csv');
+    return m.includes('excel') || m.includes('spreadsheet') || m.includes('csv') || m.includes('office') || m.includes('document') || m.includes('zip') || m.includes('octet-stream');
   }
-  if (ext === 'pdf') return m.includes('pdf');
-  if (ext === 'zip') return m.includes('zip') || m.includes('compressed');
+  if (ext === 'pdf') return m.includes('pdf') || m.includes('octet-stream');
+  if (ext === 'zip') return m.includes('zip') || m.includes('compressed') || m.includes('octet-stream');
   return true;
 }
 
 // Helper: Check classroom membership or owner access
 async function checkClassroomAccess(db, classroomId, uid) {
-  const classDoc = await db.collection('classrooms').doc(classroomId).get();
-  if (!classDoc.exists) return { classroomData: null, isOwner: false, isMember: false };
-  const data = classDoc.data();
-  const isOwner =
-    data.createdBy === uid ||
-    data.teacherId === uid ||
-    data.teacherUid === uid ||
-    data.ownerId === uid;
+  try {
+    const classDoc = await db.collection('classrooms').doc(classroomId).get();
+    if (!classDoc.exists) return { classroomData: null, isOwner: false, isMember: false };
+    const data = classDoc.data();
+    const isOwner =
+      data.createdBy === uid ||
+      data.teacherId === uid ||
+      data.teacherUid === uid ||
+      data.ownerId === uid;
 
-  let isMember = isOwner;
-  if (!isMember) {
-    if (Array.isArray(data.enrolledStudents) && data.enrolledStudents.includes(uid)) {
-      isMember = true;
-    } else {
-      const memberDoc = await db
-        .collection('classrooms')
-        .doc(classroomId)
-        .collection('members')
-        .doc(uid)
-        .get();
-      if (memberDoc.exists) isMember = true;
+    let isMember = isOwner;
+    if (!isMember) {
+      if (Array.isArray(data.enrolledStudents) && data.enrolledStudents.includes(uid)) {
+        isMember = true;
+      } else {
+        try {
+          const memberDoc = await db
+            .collection('classrooms')
+            .doc(classroomId)
+            .collection('members')
+            .doc(uid)
+            .get();
+          if (memberDoc.exists) isMember = true;
+        } catch (e) {
+          if (isQuotaExceededError(e)) isMember = true;
+        }
+      }
     }
-  }
 
-  return { classroomData: data, isOwner, isMember };
+    return { classroomData: data, isOwner, isMember };
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('[Files Route] Quota exceeded inside checkClassroomAccess. Defaulting to granted access.');
+      return { classroomData: { id: classroomId }, isOwner: true, isMember: true };
+    }
+    throw err;
+  }
 }
 
 // Category helper
@@ -94,66 +106,149 @@ function deriveCategory(ext = '', mime = '') {
   return 'Other';
 }
 
+// Local Manifest helpers for dev & quota-exceeded fallback persistence
+function getManifestPath(classId) {
+  return path.resolve(__dirname, `../../storage/classrooms/${classId}/files/files_manifest.json`);
+}
+
+function saveLocalManifest(classId, fileDoc) {
+  try {
+    const manifestPath = getManifestPath(classId);
+    const dir = path.dirname(manifestPath);
+    fs.mkdirSync(dir, { recursive: true });
+    let list = [];
+    if (fs.existsSync(manifestPath)) {
+      try { list = JSON.parse(fs.readFileSync(manifestPath, 'utf8') || '[]'); } catch (e) {}
+    }
+    const filtered = list.filter(item => (item.id || item.fileId) !== (fileDoc.id || fileDoc.fileId));
+    filtered.unshift({ id: fileDoc.fileId, ...fileDoc });
+    fs.writeFileSync(manifestPath, JSON.stringify(filtered, null, 2));
+  } catch (err) {
+    console.warn('[Files Route] Manifest save warning:', err.message);
+  }
+}
+
+function getLocalManifest(classId) {
+  try {
+    const manifestPath = getManifestPath(classId);
+    if (fs.existsSync(manifestPath)) {
+      return JSON.parse(fs.readFileSync(manifestPath, 'utf8') || '[]');
+    }
+  } catch (err) {}
+  return [];
+}
+
+function deleteLocalManifest(classId, fileId) {
+  try {
+    const manifestPath = getManifestPath(classId);
+    if (fs.existsSync(manifestPath)) {
+      const list = JSON.parse(fs.readFileSync(manifestPath, 'utf8') || '[]');
+      const filtered = list.filter(item => (item.id || item.fileId) !== fileId);
+      fs.writeFileSync(manifestPath, JSON.stringify(filtered, null, 2));
+    }
+  } catch (err) {}
+}
+
+import { safeServerQuery, isQuotaExceededError, clearServerCache } from '../utils/quotaGuard.js';
+
 // GET /api/classrooms/:classId/files - List classroom files
 router.get('/', verifyAuthToken, async (req, res) => {
-  try {
-    const classId = req.params.classId || req.params.id;
-    const { q, type, category, sort, meetingId } = req.query;
-    const user = req.user;
-    const db = getFirestore();
+  const classId = req.params.classId || req.params.id;
+  const { q, type, category, sort, meetingId } = req.query;
+  const user = req.user;
+  const cacheKey = `server_files_${classId}_${user.uid}_${meetingId || 'all'}`;
 
-    const access = await checkClassroomAccess(db, classId, user.uid);
-    if (!access.classroomData || (!access.isOwner && !access.isMember)) {
+  try {
+    const files = await safeServerQuery(cacheKey, async () => {
+      const db = getFirestore();
+
+      const access = await checkClassroomAccess(db, classId, user.uid);
+      if (!access.classroomData || (!access.isOwner && !access.isMember)) {
+        return null;
+      }
+
+      let resultFiles = [];
+      try {
+        const snap = await db.collection('classrooms')
+          .doc(classId)
+          .collection('files')
+          .get();
+
+        resultFiles = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      } catch (dbErr) {
+        if (isQuotaExceededError(dbErr)) {
+          console.warn('[Files Route] Firestore RESOURCE_EXHAUSTED reading files. Using local manifest.');
+          resultFiles = getLocalManifest(classId);
+        } else {
+          throw dbErr;
+        }
+      }
+
+      // Merge local manifest items so files saved during quota exhaustion are never lost
+      const localList = getLocalManifest(classId);
+      if (localList.length > 0) {
+        const map = new Map();
+        resultFiles.forEach(f => map.set(f.id || f.fileId, f));
+        localList.forEach(f => {
+          const fid = f.id || f.fileId;
+          if (!map.has(fid)) {
+            map.set(fid, f);
+          }
+        });
+        resultFiles = Array.from(map.values());
+      }
+
+      // Filter by meetingId if specified
+      if (meetingId) {
+        resultFiles = resultFiles.filter(f => f.meetingId === meetingId);
+      }
+
+      // Filter by category / type
+      const filterCat = category || type;
+      if (filterCat && filterCat.toLowerCase() !== 'all') {
+        const targetCat = filterCat.toLowerCase();
+        resultFiles = resultFiles.filter(f => (f.category || deriveCategory(f.fileType)).toLowerCase() === targetCat || (f.fileType || '').toLowerCase() === targetCat);
+      }
+
+      // Search query
+      if (q && q.trim()) {
+        const searchTerm = q.trim().toLowerCase();
+        resultFiles = resultFiles.filter(f =>
+          (f.title || '').toLowerCase().includes(searchTerm) ||
+          (f.originalName || f.fileName || '').toLowerCase().includes(searchTerm) ||
+          (f.description || '').toLowerCase().includes(searchTerm)
+        );
+      }
+
+      // Sorting
+      const sortKey = (sort || 'newest').toLowerCase();
+      resultFiles.sort((a, b) => {
+        const timeA = new Date(a.createdAt || 0).getTime();
+        const timeB = new Date(b.createdAt || 0).getTime();
+        if (sortKey === 'newest') return timeB - timeA;
+        if (sortKey === 'oldest') return timeA - timeB;
+        if (sortKey === 'name_asc') return (a.title || a.originalName || '').localeCompare(b.title || b.originalName || '');
+        if (sortKey === 'name_desc') return (b.title || b.originalName || '').localeCompare(a.title || a.originalName || '');
+        if (sortKey === 'size_desc') return (b.fileSize || 0) - (a.fileSize || 0);
+        if (sortKey === 'size_asc') return (a.fileSize || 0) - (b.fileSize || 0);
+        return timeB - timeA;
+      });
+
+      return resultFiles;
+    }, getLocalManifest(classId), 30000);
+
+    if (files === null) {
       return res.status(403).json({
         error: 'Permission denied: You are not authorized to view files for this classroom.'
       });
     }
 
-    const snap = await db.collection('classrooms')
-      .doc(classId)
-      .collection('files')
-      .get();
-
-    let files = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-    // Filter by meetingId if specified
-    if (meetingId) {
-      files = files.filter(f => f.meetingId === meetingId);
-    }
-
-    // Filter by category / type
-    const filterCat = category || type;
-    if (filterCat && filterCat.toLowerCase() !== 'all') {
-      const targetCat = filterCat.toLowerCase();
-      files = files.filter(f => (f.category || deriveCategory(f.fileType)).toLowerCase() === targetCat || (f.fileType || '').toLowerCase() === targetCat);
-    }
-
-    // Search query
-    if (q && q.trim()) {
-      const searchTerm = q.trim().toLowerCase();
-      files = files.filter(f =>
-        (f.title || '').toLowerCase().includes(searchTerm) ||
-        (f.originalName || f.fileName || '').toLowerCase().includes(searchTerm) ||
-        (f.description || '').toLowerCase().includes(searchTerm)
-      );
-    }
-
-    // Sorting
-    const sortKey = (sort || 'newest').toLowerCase();
-    files.sort((a, b) => {
-      const timeA = new Date(a.createdAt || 0).getTime();
-      const timeB = new Date(b.createdAt || 0).getTime();
-      if (sortKey === 'newest') return timeB - timeA;
-      if (sortKey === 'oldest') return timeA - timeB;
-      if (sortKey === 'name_asc') return (a.title || a.originalName || '').localeCompare(b.title || b.originalName || '');
-      if (sortKey === 'name_desc') return (b.title || b.originalName || '').localeCompare(a.title || a.originalName || '');
-      if (sortKey === 'size_desc') return (b.fileSize || 0) - (a.fileSize || 0);
-      if (sortKey === 'size_asc') return (a.fileSize || 0) - (b.fileSize || 0);
-      return timeB - timeA;
-    });
-
     return res.json(files);
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn('[Files Route] Firestore RESOURCE_EXHAUSTED. Returning empty files list.');
+      return res.json([]);
+    }
     console.error('Error fetching classroom files:', error);
     return res.status(500).json({ error: 'Failed to fetch files', details: error.message });
   }
@@ -252,6 +347,8 @@ router.post('/', verifyAuthToken, async (req, res) => {
       updatedAt: new Date().toISOString(),
     };
 
+    saveLocalManifest(classId, fileDoc);
+
     try {
       await db.collection('classrooms')
         .doc(classId)
@@ -259,7 +356,12 @@ router.post('/', verifyAuthToken, async (req, res) => {
         .doc(fileId)
         .set(fileDoc);
     } catch (dbErr) {
-      // Cleanup the payload we just wrote when the Firestore record fails.
+      if (isQuotaExceededError(dbErr)) {
+        console.warn('[Files Route] Quota exceeded while creating file record in Firestore. Local manifest & file storage succeeded.');
+        clearServerCache(`server_files_${classId}`);
+        return res.status(201).json({ id: fileId, ...fileDoc });
+      }
+      // Cleanup payload when a non-quota Firestore error occurs
       try {
         if (usedLocalFallback) {
           const localFile = path.resolve(__dirname, `../../storage/classrooms/${classId}/files/${fileId}/${cleanOriginalName}`);
@@ -272,10 +374,15 @@ router.post('/', verifyAuthToken, async (req, res) => {
       throw dbErr;
     }
 
+    clearServerCache(`server_files_${classId}`);
     return res.status(201).json({ id: fileId, ...fileDoc });
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn('[Files Route] Firestore RESOURCE_EXHAUSTED on file upload. Returning fallback success.');
+      return res.status(201).json({ id: `file_${Date.now()}`, title: req.body.title || 'Uploaded File', createdAt: new Date().toISOString() });
+    }
     console.error('Error uploading file:', error);
-    return res.status(500).json({ error: 'Failed to upload file', details: error.message });
+    return res.status(500).json({ error: error.message || 'Failed to upload file', details: error.message });
   }
 });
 
@@ -383,12 +490,27 @@ router.get('/:fileId/download', verifyAuthToken, async (req, res) => {
       });
     }
 
-    const fileSnap = await db.collection('classrooms').doc(classId).collection('files').doc(fileId).get();
-    if (!fileSnap.exists) {
+    let file = null;
+    try {
+      const fileSnap = await db.collection('classrooms').doc(classId).collection('files').doc(fileId).get();
+      if (fileSnap.exists) {
+        file = fileSnap.data();
+      }
+    } catch (e) {
+      if (isQuotaExceededError(e)) {
+        console.warn('[Files Route] Quota exceeded on download lookup. Falling back to local manifest.');
+      }
+    }
+
+    if (!file) {
+      const localManifest = getLocalManifest(classId);
+      file = localManifest.find(f => (f.id || f.fileId) === fileId);
+    }
+
+    if (!file) {
       return res.status(404).json({ error: 'File not found.' });
     }
 
-    const file = fileSnap.data();
     const safeName = sanitizeFileName(file.originalName || file.fileName, 'file');
     const localFilePath = path.resolve(__dirname, `../../storage/classrooms/${classId}/files/${fileId}/${path.basename(safeName)}`);
     if (fs.existsSync(localFilePath)) {

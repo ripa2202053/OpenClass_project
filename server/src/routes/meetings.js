@@ -45,33 +45,47 @@ async function checkClassroomAccess(db, classId, userUid) {
   return { isOwner, isMember, classroomData: cData };
 }
 
-// GET /api/classrooms/:classId/meetings - List meetings (Enrolled students or teacher owner only)
-router.get('/', verifyAuthToken, async (req, res) => {
-  try {
-    const { classId } = req.params;
-    const user = req.user;
-    const db = getFirestore();
+import { safeServerQuery, isQuotaExceededError } from '../utils/quotaGuard.js';
 
-    const access = await checkClassroomAccess(db, classId, user.uid);
-    if (!access.classroomData || (!access.isOwner && !access.isMember)) {
+// GET /api/classrooms/:classId/meetings - List meetings for classroom
+router.get('/', verifyAuthToken, async (req, res) => {
+  const { classId } = req.params;
+  const user = req.user;
+  const cacheKey = `server_meetings_${classId}_${user.uid}`;
+
+  try {
+    const meetings = await safeServerQuery(cacheKey, async () => {
+      const db = getFirestore();
+
+      const access = await checkClassroomAccess(db, classId, user.uid);
+      if (!access.classroomData || (!access.isOwner && !access.isMember)) {
+        return null;
+      }
+
+      const snapshot = await db.collection('classrooms')
+        .doc(classId)
+        .collection('meetings')
+        .get();
+
+      return snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() }))
+        .sort((a, b) => {
+          const tA = a.createdAt?.seconds || (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+          const tB = b.createdAt?.seconds || (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+          return tB - tA;
+        });
+    }, [], 30000);
+
+    if (meetings === null) {
       return res.status(403).json({ error: 'Permission denied: You are not authorized to view meetings for this classroom.' });
     }
 
-    const snapshot = await db.collection('classrooms')
-      .doc(classId)
-      .collection('meetings')
-      .get();
-
-    const meetings = snapshot.docs
-      .map(doc => ({ id: doc.id, ...doc.data() }))
-      .sort((a, b) => {
-        const tA = a.createdAt?.seconds || (a.createdAt ? new Date(a.createdAt).getTime() : 0);
-        const tB = b.createdAt?.seconds || (b.createdAt ? new Date(b.createdAt).getTime() : 0);
-        return tB - tA;
-      });
-
     return res.json(meetings);
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn('[Meetings Route] Firestore RESOURCE_EXHAUSTED. Returning empty meetings list.');
+      return res.json([]);
+    }
     console.error('Error fetching meetings:', error);
     return res.status(500).json({ error: 'Failed to fetch meetings', details: error.message });
   }

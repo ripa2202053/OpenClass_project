@@ -4,21 +4,32 @@ import { verifyAuthToken } from '../middleware/auth.js';
 
 const router = express.Router({ mergeParams: true });
 
+import { safeServerQuery, isQuotaExceededError } from '../utils/quotaGuard.js';
+
 // GET /api/classrooms/:classId/notes - Fetch notes
 router.get('/', verifyAuthToken, async (req, res) => {
+  const { classId } = req.params;
+  const cacheKey = `server_notes_${classId}`;
+
   try {
-    const { classId } = req.params;
-    const db = getFirestore();
+    const notes = await safeServerQuery(cacheKey, async () => {
+      const db = getFirestore();
 
-    const snapshot = await db.collection('classrooms')
-      .doc(classId)
-      .collection('notes')
-      .orderBy('createdAt', 'desc')
-      .get();
+      const snapshot = await db.collection('classrooms')
+        .doc(classId)
+        .collection('notes')
+        .orderBy('createdAt', 'desc')
+        .get();
 
-    const notes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    }, [], 30000);
+
     return res.json(notes);
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn('[Notes Route] Firestore RESOURCE_EXHAUSTED. Returning empty notes list.');
+      return res.json([]);
+    }
     console.error('Error fetching notes:', error);
     return res.status(500).json({ error: 'Failed to fetch notes', details: error.message });
   }

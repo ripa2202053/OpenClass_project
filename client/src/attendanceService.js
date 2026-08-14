@@ -95,20 +95,27 @@ export async function markAllPresent(classroomId, dateStr, studentIds, user) {
   await batch.commit();
 }
 
+import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
+
 // Real-time attendance for a date
 export function subscribeAttendance(classroomId, dateStr, callback) {
   const db = getFirestore();
-  return onSnapshot(doc(db, 'classrooms', classroomId, 'attendance', dateStr), (snap) => {
-    callback(snap.exists() ? { id: snap.id, ...snap.data() } : null);
-  });
+  return safeOnSnapshot(
+    doc(db, 'classrooms', classroomId, 'attendance', dateStr),
+    (snap) => callback(snap.exists() ? { id: snap.id, ...snap.data() } : null),
+    (err) => console.warn('[attendanceService] subscribeAttendance quota warning:', err),
+    'subscribeAttendance'
+  );
 }
 
 // Real-time student history
 export function subscribeStudentHistory(uid, callback) {
   const db = getFirestore();
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(db, 'users', uid, 'attendance'), orderBy('timestamp', 'desc'), limit(200)),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[attendanceService] subscribeStudentHistory quota warning:', err),
+    'subscribeStudentHistory'
   );
 }
 

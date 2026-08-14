@@ -80,86 +80,72 @@ router.post('/', verifyAuthToken, async (req, res) => {
   }
 });
 
+import { safeServerQuery, isQuotaExceededError } from '../utils/quotaGuard.js';
+
 // GET /api/classrooms - Fetch joined or owned classes for logged-in user
 router.get('/', verifyAuthToken, async (req, res) => {
+  const uid = req.user.uid;
+  const isTeacher = (req.user.role || '').toLowerCase() === 'teacher' || (req.user.role || '').toLowerCase() === 'admin';
+  const cacheKey = `server_user_classrooms_${uid}_${isTeacher}`;
+
   try {
-    const db = getFirestore();
-    const uid = req.user.uid;
-    const isTeacher = (req.user.role || '').toLowerCase() === 'teacher' || (req.user.role || '').toLowerCase() === 'admin';
+    const classrooms = await safeServerQuery(cacheKey, async () => {
+      const db = getFirestore();
+      const list = [];
+      const seenIds = new Set();
 
-    const classrooms = [];
-    const seenIds = new Set();
+      if (isTeacher) {
+        // Query at DB level specifically for classrooms created by this teacher
+        const createdSnap = await db.collection('classrooms')
+          .where('isActive', '==', true)
+          .where('createdBy', '==', uid)
+          .get();
 
-    if (isTeacher) {
-      // Query at DB level specifically for classrooms created by this teacher
-      const createdSnap = await db.collection('classrooms')
-        .where('isActive', '==', true)
-        .where('createdBy', '==', uid)
-        .get();
-
-      for (const doc of createdSnap.docs) {
-        seenIds.add(doc.id);
-        classrooms.push({ id: doc.id, ...doc.data() });
-      }
-
-      // Also check fallback teacherId/teacherUid/ownerId fields at DB level
-      const teacherIdSnap = await db.collection('classrooms')
-        .where('isActive', '==', true)
-        .where('teacherId', '==', uid)
-        .get();
-
-      for (const doc of teacherIdSnap.docs) {
-        if (!seenIds.has(doc.id)) {
+        for (const doc of createdSnap.docs) {
           seenIds.add(doc.id);
-          classrooms.push({ id: doc.id, ...doc.data() });
+          list.push({ id: doc.id, ...doc.data() });
         }
-      }
-    } else {
-      // For student users, query classrooms where created or enrolled
-      const createdSnap = await db.collection('classrooms')
-        .where('isActive', '==', true)
-        .where('createdBy', '==', uid)
-        .get();
 
-      for (const doc of createdSnap.docs) {
-        seenIds.add(doc.id);
-        classrooms.push({ id: doc.id, ...doc.data() });
-      }
+        // Also check fallback teacherId/teacherUid/ownerId fields at DB level
+        const teacherIdSnap = await db.collection('classrooms')
+          .where('isActive', '==', true)
+          .where('teacherId', '==', uid)
+          .get();
 
-      const enrolledSnap = await db.collection('classrooms')
-        .where('isActive', '==', true)
-        .where('enrolledStudents', 'array-contains', uid)
-        .get();
-
-      for (const doc of enrolledSnap.docs) {
-        if (!seenIds.has(doc.id)) {
-          seenIds.add(doc.id);
-          classrooms.push({ id: doc.id, ...doc.data() });
-        }
-      }
-
-      const allActiveSnap = await db.collection('classrooms')
-        .where('isActive', '==', true)
-        .get();
-
-      for (const doc of allActiveSnap.docs) {
-        if (seenIds.has(doc.id)) continue;
-        const data = doc.data();
-        if (data.createdBy === uid || data.teacherId === uid || data.ownerId === uid || data.teacherUid === uid) {
-          seenIds.add(doc.id);
-          classrooms.push({ id: doc.id, ...data });
-        } else {
-          const memberSnap = await db.collection('classrooms').doc(doc.id).collection('members').doc(uid).get();
-          if (memberSnap.exists && memberSnap.data().approved !== false) {
+        for (const doc of teacherIdSnap.docs) {
+          if (!seenIds.has(doc.id)) {
             seenIds.add(doc.id);
-            classrooms.push({ id: doc.id, ...data, memberData: memberSnap.data() });
+            list.push({ id: doc.id, ...doc.data() });
+          }
+        }
+      } else {
+        const createdSnap = await db.collection('classrooms')
+          .where('isActive', '==', true)
+          .get();
+
+        for (const doc of createdSnap.docs) {
+          const data = doc.data();
+          if (
+            data.createdBy === uid ||
+            data.teacherId === uid ||
+            (Array.isArray(data.members) && data.members.includes(uid)) ||
+            (Array.isArray(data.enrolledStudents) && data.enrolledStudents.includes(uid))
+          ) {
+            seenIds.add(doc.id);
+            list.push({ id: doc.id, ...data });
           }
         }
       }
-    }
+
+      return list;
+    }, [], 30000);
 
     return res.json(classrooms);
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn('[Classrooms Route] Firestore RESOURCE_EXHAUSTED. Returning empty/cached classrooms list.');
+      return res.json([]);
+    }
     console.error('Error fetching classrooms:', error);
     return res.status(500).json({ error: 'Failed to fetch classrooms', details: error.message });
   }

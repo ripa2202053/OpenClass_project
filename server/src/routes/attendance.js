@@ -67,30 +67,41 @@ router.post('/', verifyAuthToken, async (req, res) => {
   }
 });
 
+import { safeServerQuery, isQuotaExceededError } from '../utils/quotaGuard.js';
+
 // GET /api/classrooms/:classId/attendance - Get attendance records
 router.get('/', verifyAuthToken, async (req, res) => {
+  const { classId } = req.params;
+  const { date } = req.query;
+  const cacheKey = `server_attendance_${classId}_${date || 'history'}`;
+
   try {
-    const { classId } = req.params;
-    const { date } = req.query;
-    const db = getFirestore();
+    const result = await safeServerQuery(cacheKey, async () => {
+      const db = getFirestore();
 
-    if (date) {
-      const snap = await db.collection('classrooms').doc(classId).collection('attendance').doc(date).get();
-      if (!snap.exists) {
-        return res.json({ date, records: {} });
+      if (date) {
+        const snap = await db.collection('classrooms').doc(classId).collection('attendance').doc(date).get();
+        if (!snap.exists) {
+          return { date, records: {} };
+        }
+        return { id: snap.id, ...snap.data() };
       }
-      return res.json({ id: snap.id, ...snap.data() });
-    }
 
-    const snapshot = await db.collection('classrooms')
-      .doc(classId)
-      .collection('attendance')
-      .orderBy('date', 'desc')
-      .get();
+      const snapshot = await db.collection('classrooms')
+        .doc(classId)
+        .collection('attendance')
+        .orderBy('date', 'desc')
+        .get();
 
-    const history = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    return res.json(history);
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    }, date ? { date, records: {} } : [], 30000);
+
+    return res.json(result);
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn('[Attendance Route] Firestore RESOURCE_EXHAUSTED. Returning empty attendance record.');
+      return res.json(date ? { date, records: {} } : []);
+    }
     console.error('Error fetching attendance:', error);
     return res.status(500).json({ error: 'Failed to fetch attendance', details: error.message });
   }

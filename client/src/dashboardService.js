@@ -13,6 +13,7 @@ import {
   limit,
 } from 'firebase/firestore';
 import { fetchWithAuth } from './utils/api.js';
+import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
 
 let unsubscribers = [];
 
@@ -29,30 +30,41 @@ export async function fetchDashboardStats() {
   try {
     return await fetchWithAuth('/api/dashboard/stats');
   } catch (error) {
-    console.warn('Could not fetch stats from Express API, falling back to local Firestore calculation:', error);
+    if (isQuotaExceededError(error)) {
+      console.warn('[dashboardService] Express API fetchDashboardStats quota exceeded:', error.message);
+    } else {
+      console.warn('Could not fetch stats from Express API, falling back to local Firestore calculation:', error);
+    }
     return null;
   }
 }
 
 async function getUserClassroomIds(uid) {
   const db = getFirestore();
-  const classroomsSnap = await getDocs(
-    query(collection(db, 'classrooms'), where('isActive', '==', true))
-  );
-  const ids = [];
-  const promises = classroomsSnap.docs.map(async (c) => {
-    const data = c.data();
-    if (data.createdBy === uid || data.teacherId === uid) {
-      ids.push(c.id);
-      return;
+  try {
+    const classroomsSnap = await getDocs(
+      query(collection(db, 'classrooms'), where('isActive', '==', true))
+    );
+    const ids = [];
+    classroomsSnap.docs.forEach((c) => {
+      const data = c.data();
+      if (
+        data.createdBy === uid ||
+        data.teacherId === uid ||
+        data.teacherUid === uid ||
+        (Array.isArray(data.members) && data.members.includes(uid)) ||
+        (Array.isArray(data.enrolledStudents) && data.enrolledStudents.includes(uid))
+      ) {
+        ids.push(c.id);
+      }
+    });
+    return ids;
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('[dashboardService] getUserClassroomIds quota exceeded:', err.message);
     }
-    try {
-      const memberSnap = await getDoc(doc(db, 'classrooms', c.id, 'members', uid));
-      if (memberSnap.exists()) ids.push(c.id);
-    } catch (e) {}
-  });
-  await Promise.all(promises);
-  return ids;
+    return [];
+  }
 }
 
 export function subscribeDashboardData(uid, role, callback) {
@@ -92,7 +104,7 @@ export function subscribeDashboardData(uid, role, callback) {
       return;
     }
 
-    const totalUnsub = onSnapshot(
+    const totalUnsub = safeOnSnapshot(
       query(collection(db, 'classrooms'), where('isActive', '==', true)),
       (snap) => {
         let count = 0;
@@ -111,14 +123,16 @@ export function subscribeDashboardData(uid, role, callback) {
         if (role === 'teacher') {
           callback({ type: 'totalStudents', data: Math.max(0, totalStudents) });
         }
-        callback({ type: 'pendingAssignments', data: Math.max(0, Math.floor(Math.random() * 3) + count % 3) });
-      }
+        callback({ type: 'pendingAssignments', data: Math.max(0, count % 3) });
+      },
+      (err) => console.warn('[dashboardService] totalUnsub quota warning:', err),
+      'subscribeDashboardData.total'
     );
     unsubscribers.push(totalUnsub);
 
     if (role === 'teacher') {
       const teacherClassrooms = [];
-      const teacherUnsub = onSnapshot(
+      const teacherUnsub = safeOnSnapshot(
         query(collection(db, 'classrooms'), where('createdBy', '==', uid)),
         (snap) => {
           snap.docChanges().forEach(change => {
@@ -129,26 +143,36 @@ export function subscribeDashboardData(uid, role, callback) {
           const q = [];
           const a = [];
           Promise.all(teacherClassrooms.map(async cId => {
-            const qSnap = await getDocs(query(collection(db, 'classrooms', cId, 'quizzes'), limit(999)));
-            q.push(qSnap.size);
-            const aSnap = await getDocs(query(collection(db, 'classrooms', cId, 'assignments'), limit(999)));
-            a.push(aSnap.size);
+            try {
+              const qSnap = await getDocs(query(collection(db, 'classrooms', cId, 'quizzes'), limit(999)));
+              q.push(qSnap.size);
+              const aSnap = await getDocs(query(collection(db, 'classrooms', cId, 'assignments'), limit(999)));
+              a.push(aSnap.size);
+            } catch (e) {
+              if (isQuotaExceededError(e)) {
+                console.warn('[dashboardService] Quota exceeded fetching teacher stats for classroom:', cId);
+              }
+            }
           })).then(() => {
             callback({ type: 'quizzesCreated', data: q.reduce((s, v) => s + v, 0) });
             callback({ type: 'assignmentsCreated', data: a.reduce((s, v) => s + v, 0) });
           });
-        }
+        },
+        (err) => console.warn('[dashboardService] teacherUnsub quota warning:', err),
+        'subscribeDashboardData.teacher'
       );
       unsubscribers.push(teacherUnsub);
     }
 
     if (role === 'student') {
       const studentUnsubs = classroomIds.map(cId => {
-        return onSnapshot(
+        return safeOnSnapshot(
           query(collection(db, 'classrooms', cId, 'quizzes'), limit(999)),
           (snap) => {
             callback({ type: 'upcomingQuizzes', data: snap.size });
-          }
+          },
+          (err) => console.warn('[dashboardService] studentUnsub quota warning:', err),
+          'subscribeDashboardData.studentQuizzes'
         );
       });
       unsubscribers.push(...studentUnsubs);
@@ -156,7 +180,7 @@ export function subscribeDashboardData(uid, role, callback) {
 
     const allMessages = [];
     const msgUnsubs = classroomIds.map(cId => {
-      return onSnapshot(
+      return safeOnSnapshot(
         query(collection(db, 'classrooms', cId, 'messages'), orderBy('timestamp', 'desc'), limit(50)),
         (snap) => {
           const msgs = snap.docs.map(d => ({ id: d.id, classroomId: cId, ...d.data() }));
@@ -167,14 +191,16 @@ export function subscribeDashboardData(uid, role, callback) {
             if (m.senderId !== uid && (!m.readBy || !m.readBy[uid])) unread++;
           });
           callback({ type: 'unreadMessages', data: unread });
-        }
+        },
+        (err) => console.warn('[dashboardService] msgUnsub quota warning:', err),
+        'subscribeDashboardData.messages'
       );
     });
     unsubscribers.push(...msgUnsubs);
 
     const activity = [];
     const actUnsubs = classroomIds.map(cId => {
-      return onSnapshot(
+      return safeOnSnapshot(
         query(collection(db, 'classrooms', cId, 'activity'), orderBy('timestamp', 'desc'), limit(10)),
         (snap) => {
           snap.docChanges().forEach(change => {
@@ -188,14 +214,16 @@ export function subscribeDashboardData(uid, role, callback) {
             return tb - ta;
           });
           callback({ type: 'recentActivity', data: activity.slice(0, 15) });
-        }
+        },
+        (err) => console.warn('[dashboardService] actUnsub quota warning:', err),
+        'subscribeDashboardData.activity'
       );
     });
     unsubscribers.push(...actUnsubs);
 
     const notices = [];
     const noticeUnsubs = classroomIds.map(cId => {
-      return onSnapshot(
+      return safeOnSnapshot(
         query(collection(db, 'classrooms', cId, 'notices'), orderBy('createdAt', 'desc'), limit(5)),
         (snap) => {
           snap.docChanges().forEach(change => {
@@ -209,7 +237,9 @@ export function subscribeDashboardData(uid, role, callback) {
             return tb - ta;
           });
           callback({ type: 'notices', data: notices.slice(0, 10) });
-        }
+        },
+        (err) => console.warn('[dashboardService] noticeUnsub quota warning:', err),
+        'subscribeDashboardData.notices'
       );
     });
     unsubscribers.push(...noticeUnsubs);
@@ -228,7 +258,11 @@ export async function addActivity(classroomId, type, description, user) {
       timestamp: serverTimestamp(),
     });
   } catch (e) {
-    console.warn('Could not add activity:', e);
+    if (isQuotaExceededError(e)) {
+      console.warn('Could not add activity (quota exceeded):', e.message);
+    } else {
+      console.warn('Could not add activity:', e);
+    }
   }
 }
 
@@ -244,14 +278,21 @@ export async function addNotice(classroomId, title, content, user) {
       createdAt: serverTimestamp(),
     });
   } catch (e) {
-    console.warn('Could not add notice:', e);
+    if (isQuotaExceededError(e)) {
+      console.warn('Could not add notice (quota exceeded):', e.message);
+    } else {
+      console.warn('Could not add notice:', e);
+    }
   }
 }
 
 export function subscribeNotices(classroomId, callback) {
   const db = getFirestore();
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(db, 'classrooms', classroomId, 'notices'), orderBy('createdAt', 'desc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[dashboardService] subscribeNotices quota warning:', err),
+    'subscribeNotices'
   );
 }
+

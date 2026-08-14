@@ -251,13 +251,20 @@ export async function getUser(uid) {
           console.warn('Could not persist role migration for', uid, e);
         }
       }
-      return { ...data, role: normalizedRole };
+      const fullProfile = { ...data, role: normalizedRole };
+      saveProfileToStorage(fullProfile);
+      return fullProfile;
     }
-    return null;
   } catch (error) {
-    console.error('Error fetching user:', error);
-    return null;
+    console.warn('[userService] Error/quota fetching user from Firestore, attempting storage fallback:', error.message || error);
   }
+
+  const cached = getProfileFromStorage(uid);
+  if (cached) {
+    console.log('[userService] Serving cached profile from localStorage for uid:', uid);
+    return cached;
+  }
+  return null;
 }
 
 export async function updateUser(uid, data) {
@@ -348,17 +355,23 @@ export async function updateProfile(uid, profileData, imageFile = null, fallback
   return savedUser;
 }
 
+import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
+
 export function subscribeAllUsers(callback) {
   const db = getFirestore();
   const colRef = collection(db, 'users');
 
-  const unsub = onSnapshot(
+  const unsub = safeOnSnapshot(
     colRef,
     (snap) => {
       const users = snap.docs.map(d => ({ uid: d.id, ...d.data() }));
       callback(users);
     },
     async (err) => {
+      if (isQuotaExceededError(err)) {
+        console.warn('subscribeAllUsers quota exceeded:', err.message);
+        return;
+      }
       console.warn('subscribeAllUsers snapshot error, attempting fallback getDocs:', err);
       try {
         const snap = await getDocs(colRef);
@@ -368,7 +381,8 @@ export function subscribeAllUsers(callback) {
         console.error('Failed to fetch users fallback:', fallbackErr);
         callback([]);
       }
-    }
+    },
+    'subscribeAllUsers'
   );
 
   return unsub;

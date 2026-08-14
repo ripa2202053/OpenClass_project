@@ -1,71 +1,90 @@
-import {
-  getFirestore, collection, doc, getDoc, getDocs,
-  query, where, orderBy, onSnapshot, Timestamp
-} from 'firebase/firestore';
+import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
 
 // ─── Classroom Analytics ───────────────────────────────────────
 
 export async function getClassroomAnalytics(classroomId) {
   const db = getFirestore();
-  const [classSnap, membersSnap, assignSnap, quizSnap, attSnap] = await Promise.all([
-    getDoc(doc(db, 'classrooms', classroomId)),
-    getDocs(collection(db, 'classrooms', classroomId, 'members')),
-    getDocs(collection(db, 'classrooms', classroomId, 'assignments')),
-    getDocs(collection(db, 'classrooms', classroomId, 'quizzes')),
-    getDocs(query(collection(db, 'classrooms', classroomId, 'attendance'), orderBy('date', 'desc'), limit(30))),
-  ]);
+  try {
+    const [classSnap, membersSnap, assignSnap, quizSnap, attSnap] = await Promise.all([
+      getDoc(doc(db, 'classrooms', classroomId)),
+      getDocs(collection(db, 'classrooms', classroomId, 'members')),
+      getDocs(collection(db, 'classrooms', classroomId, 'assignments')),
+      getDocs(collection(db, 'classrooms', classroomId, 'quizzes')),
+      getDocs(query(collection(db, 'classrooms', classroomId, 'attendance'), orderBy('date', 'desc'), limit(30))),
+    ]);
 
-  const classroom = classSnap.data() || {};
-  const members = membersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-  const assignments = assignSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-  const quizzes = quizSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-  const attendanceRecords = attSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const classroom = classSnap.data() || {};
+    const members = membersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const assignments = assignSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const quizzes = quizSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const attendanceRecords = attSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-  // Assignment completion
-  const assignmentData = await Promise.all(assignments.map(async (a) => {
-    const subSnap = await getDocs(collection(db, 'classrooms', classroomId, 'assignments', a.id, 'submissions'));
-    const subs = subSnap.docs.map(s => ({ id: s.id, ...s.data() }));
-    const studentCount = members.filter(m => (m.role || 'student').toLowerCase() === 'student').length;
+    // Assignment completion
+    const assignmentData = await Promise.all(assignments.map(async (a) => {
+      try {
+        const subSnap = await getDocs(collection(db, 'classrooms', classroomId, 'assignments', a.id, 'submissions'));
+        const subs = subSnap.docs.map(s => ({ id: s.id, ...s.data() }));
+        const studentCount = members.filter(m => (m.role || 'student').toLowerCase() === 'student').length;
+        return {
+          id: a.id, title: a.title || 'Untitled',
+          totalStudents: studentCount,
+          submitted: subs.length,
+          completionRate: studentCount > 0 ? Math.round(subs.length / studentCount * 100) : 0,
+        };
+      } catch (e) {
+        return { id: a.id, title: a.title || 'Untitled', totalStudents: 0, submitted: 0, completionRate: 0 };
+      }
+    }));
+
+    // Quiz performance
+    const quizData = await Promise.all(quizzes.map(async (q) => {
+      try {
+        const attSnap2 = await getDocs(collection(db, 'classrooms', classroomId, 'quizzes', q.id, 'attempts'));
+        const attempts = attSnap2.docs.map(a => ({ id: a.id, ...a.data() }));
+        const scores = attempts.map(a => a.score || 0).filter(s => s > 0);
+        const avg = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length * 100) / 100 : 0;
+        return {
+          id: q.id, title: q.title || 'Untitled',
+          totalAttempts: attempts.length,
+          avgScore: avg,
+          maxScore: scores.length > 0 ? Math.max(...scores) : 0,
+        };
+      } catch (e) {
+        return { id: q.id, title: q.title || 'Untitled', totalAttempts: 0, avgScore: 0, maxScore: 0 };
+      }
+    }));
+
+    // Attendance stats
+    const attendanceStats = attendanceRecords.map(r => {
+      const vals = Object.values(r.records || {});
+      const total = vals.length;
+      const present = vals.filter(v => v.status === 'present').length;
+      const absent = vals.filter(v => v.status === 'absent').length;
+      const late = vals.filter(v => v.status === 'late').length;
+      return { date: r.date || r.id, total, present, absent, late, rate: total > 0 ? Math.round(present / total * 100) : 0 };
+    });
+
     return {
-      id: a.id, title: a.title || 'Untitled',
-      totalStudents: studentCount,
-      submitted: subs.length,
-      completionRate: studentCount > 0 ? Math.round(subs.length / studentCount * 100) : 0,
+      classroom: { name: classroom.classroomName || classroomId, code: classroom.classroomCode, teacher: classroom.createdByName || '' },
+      members: { total: members.length, students: members.filter(m => (m.role || 'student').toLowerCase() === 'student').length, teachers: members.filter(m => (m.role || '').toLowerCase() === 'teacher').length },
+      assignments: { total: assignments.length, data: assignmentData, avgCompletion: assignmentData.length > 0 ? Math.round(assignmentData.reduce((a, d) => a + d.completionRate, 0) / assignmentData.length) : 0 },
+      quizzes: { total: quizzes.length, data: quizData, avgScore: quizData.length > 0 ? Math.round(quizData.reduce((a, d) => a + d.avgScore, 0) / quizData.length * 100) / 100 : 0 },
+      attendance: { records: attendanceStats, avgRate: attendanceStats.length > 0 ? Math.round(attendanceStats.reduce((a, r) => a + r.rate, 0) / attendanceStats.length) : 0 },
     };
-  }));
-
-  // Quiz performance
-  const quizData = await Promise.all(quizzes.map(async (q) => {
-    const attSnap2 = await getDocs(collection(db, 'classrooms', classroomId, 'quizzes', q.id, 'attempts'));
-    const attempts = attSnap2.docs.map(a => ({ id: a.id, ...a.data() }));
-    const scores = attempts.map(a => a.score || 0).filter(s => s > 0);
-    const avg = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length * 100) / 100 : 0;
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      console.warn('[analyticsService] getClassroomAnalytics quota exceeded:', err.message);
+    }
     return {
-      id: q.id, title: q.title || 'Untitled',
-      totalAttempts: attempts.length,
-      avgScore: avg,
-      maxScore: scores.length > 0 ? Math.max(...scores) : 0,
+      classroom: { name: classroomId, code: '', teacher: '' },
+      members: { total: 0, students: 0, teachers: 0 },
+      assignments: { total: 0, data: [], avgCompletion: 0 },
+      quizzes: { total: 0, data: [], avgScore: 0 },
+      attendance: { records: [], avgRate: 0 },
     };
-  }));
-
-  // Attendance stats
-  const attendanceStats = attendanceRecords.map(r => {
-    const vals = Object.values(r.records || {});
-    const total = vals.length;
-    const present = vals.filter(v => v.status === 'present').length;
-    const absent = vals.filter(v => v.status === 'absent').length;
-    const late = vals.filter(v => v.status === 'late').length;
-    return { date: r.date || r.id, total, present, absent, late, rate: total > 0 ? Math.round(present / total * 100) : 0 };
-  });
-
-  return {
-    classroom: { name: classroom.classroomName || classroomId, code: classroom.classroomCode, teacher: classroom.createdByName || '' },
-    members: { total: members.length, students: members.filter(m => (m.role || 'student').toLowerCase() === 'student').length, teachers: members.filter(m => (m.role || '').toLowerCase() === 'teacher').length },
-    assignments: { total: assignments.length, data: assignmentData, avgCompletion: assignmentData.length > 0 ? Math.round(assignmentData.reduce((a, d) => a + d.completionRate, 0) / assignmentData.length) : 0 },
-    quizzes: { total: quizzes.length, data: quizData, avgScore: quizData.length > 0 ? Math.round(quizData.reduce((a, d) => a + d.avgScore, 0) / quizData.length * 100) / 100 : 0 },
-    attendance: { records: attendanceStats, avgRate: attendanceStats.length > 0 ? Math.round(attendanceStats.reduce((a, r) => a + r.rate, 0) / attendanceStats.length) : 0 },
-  };
+  }
 }
+
 
 // ─── Student Performance ───────────────────────────────────────
 

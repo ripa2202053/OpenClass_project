@@ -37,16 +37,14 @@ export async function createBulkNotifications(recipientIds, type, title, body, d
   await batch.commit();
 }
 
+import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
+
 export function subscribeNotifications(uid, callback) {
   const db = getFirestore();
-  // Match notifications addressed to this user via EITHER recipientId (current
-  // schema) or userId (legacy schema). Merged client-side by doc id; ordering is
-  // handled by the render layer (createdAt can be Timestamp or ISO string), so
-  // no orderBy is needed and no extra composite indexes are required.
   const seen = new Map();
   const unsubs = [];
   const attach = (field) => {
-    unsubs.push(onSnapshot(
+    unsubs.push(safeOnSnapshot(
       query(collection(db, 'notifications'), where(field, '==', uid)),
       (snap) => {
         snap.docChanges().forEach(ch => {
@@ -54,14 +52,13 @@ export function subscribeNotifications(uid, callback) {
           if (ch.type === 'removed') seen.delete(d.id);
           else seen.set(d.id, { id: d.id, ...d.data() });
         });
-        // Verify each doc is actually addressed to this user (recipientId,
-        // userId, or teacherUid matching) before re-rendering the popup list.
         const mine = [...seen.values()].filter(n =>
           n.recipientId === uid || n.userId === uid || n.teacherUid === uid
         );
         callback(mine);
       },
-      (err) => console.warn(`subscribeNotifications (${field}) error:`, err)
+      (err) => console.warn(`[notificationService] subscribeNotifications quota warning for field ${field}:`, err),
+      `subscribeNotifications_${field}`
     ));
   };
   attach('recipientId');

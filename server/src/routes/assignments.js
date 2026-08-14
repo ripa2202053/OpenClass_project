@@ -60,27 +60,38 @@ router.post('/', verifyAuthToken, async (req, res) => {
   }
 });
 
+import { safeServerQuery, isQuotaExceededError } from '../utils/quotaGuard.js';
+
 // GET /api/classrooms/:classId/assignments - Get assignments
 router.get('/', verifyAuthToken, async (req, res) => {
+  const { classId } = req.params;
+  const cacheKey = `server_assignments_${classId}`;
+
   try {
-    const { classId } = req.params;
-    const db = getFirestore();
+    const assignments = await safeServerQuery(cacheKey, async () => {
+      const db = getFirestore();
 
-    const snapshot = await db.collection('classrooms')
-      .doc(classId)
-      .collection('assignments')
-      .orderBy('createdAt', 'desc')
-      .get();
+      const snapshot = await db.collection('classrooms')
+        .doc(classId)
+        .collection('assignments')
+        .orderBy('createdAt', 'desc')
+        .get();
 
-    const assignments = snapshot.docs.map(doc => {
-      const data = doc.data();
-      if (data.dueDate && typeof data.dueDate.toMillis === 'function') {
-        data.dueDate = new Date(data.dueDate.toMillis()).toISOString();
-      }
-      return { id: doc.id, ...data };
-    });
+      return snapshot.docs.map(doc => {
+        const data = doc.data();
+        if (data.dueDate && typeof data.dueDate.toMillis === 'function') {
+          data.dueDate = new Date(data.dueDate.toMillis()).toISOString();
+        }
+        return { id: doc.id, ...data };
+      });
+    }, [], 30000);
+
     return res.json(assignments);
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn('[Assignments Route] Firestore RESOURCE_EXHAUSTED. Returning empty assignments list.');
+      return res.json([]);
+    }
     console.error('Error fetching assignments:', error);
     return res.status(500).json({ error: 'Failed to fetch assignments', details: error.message });
   }

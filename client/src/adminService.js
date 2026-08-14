@@ -4,17 +4,23 @@ import {
   Timestamp
 } from 'firebase/firestore';
 
+import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
+
 export function subscribeAllUsers(callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'users'), orderBy('createdAt', 'desc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[adminService] subscribeAllUsers quota warning:', err),
+    'subscribeAllUsers'
   );
 }
 
 export function subscribeUsersByRole(role, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'users'), where('role', '==', role), orderBy('createdAt', 'desc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[adminService] subscribeUsersByRole quota warning:', err),
+    'subscribeUsersByRole'
   );
 }
 
@@ -39,9 +45,11 @@ export async function updateUserRole(uid, newRole) {
 }
 
 export function subscribeAllClassrooms(callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'classrooms'), orderBy('createdAt', 'desc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[adminService] subscribeAllClassrooms quota warning:', err),
+    'subscribeAllClassrooms'
   );
 }
 
@@ -60,23 +68,31 @@ export async function deleteClassroomAdmin(classroomId) {
 }
 
 export function subscribeActivityLogs(limitCount = 100, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'activityLogs'), orderBy('timestamp', 'desc'), limit(limitCount)),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[adminService] subscribeActivityLogs quota warning:', err),
+    'subscribeActivityLogs'
   );
 }
 
 export async function logActivity(action, user, details = {}) {
   const db = getFirestore();
-  await addDoc(collection(db, 'activityLogs'), {
-    action,
-    userId: user.uid,
-    userName: user.displayName || 'Unknown',
-    userEmail: user.email || '',
-    role: user.role || 'unknown',
-    details,
-    timestamp: serverTimestamp(),
-  });
+  try {
+    await addDoc(collection(db, 'activityLogs'), {
+      action,
+      userId: user.uid,
+      userName: user.displayName || 'Unknown',
+      userEmail: user.email || '',
+      role: user.role || 'unknown',
+      details,
+      timestamp: serverTimestamp(),
+    });
+  } catch (e) {
+    if (isQuotaExceededError(e)) {
+      console.warn('[adminService] logActivity quota exceeded:', e.message);
+    }
+  }
 }
 
 export function subscribePlatformStats(callback) {
@@ -84,29 +100,18 @@ export function subscribePlatformStats(callback) {
   const unsubs = [];
   let users = [];
   let classrooms = [];
-  let quizzes = [];
-  let assignments = [];
-
-  unsubs.push(onSnapshot(collection(db, 'users'), snap => { users = snap.docs.map(d => ({ id: d.id, ...d.data() })); emit(); }));
-  unsubs.push(onSnapshot(collection(db, 'classrooms'), snap => { classrooms = snap.docs.map(d => ({ id: d.id, ...d.data() })); emit(); }));
-
   let quizCount = 0;
   let assignmentCount = 0;
 
-  async function refreshCounts() {
-    let qc = 0, ac = 0;
-    for (const c of classrooms) {
-      try {
-        const qSnap = await getDocs(collection(db, 'classrooms', c.id, 'quizzes'));
-        qc += qSnap.size;
-        const aSnap = await getDocs(collection(db, 'classrooms', c.id, 'assignments'));
-        ac += aSnap.size;
-      } catch {}
-    }
-    quizCount = qc;
-    assignmentCount = ac;
+  unsubs.push(safeOnSnapshot(collection(db, 'users'), snap => {
+    users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     emit();
-  }
+  }, null, 'subscribePlatformStats.users'));
+
+  unsubs.push(safeOnSnapshot(collection(db, 'classrooms'), snap => {
+    classrooms = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    emit();
+  }, null, 'subscribePlatformStats.classrooms'));
 
   let emitTimer = null;
   function emit() {
@@ -122,6 +127,6 @@ export function subscribePlatformStats(callback) {
     }, 500);
   }
 
-  refreshCounts();
   return () => { clearTimeout(emitTimer); unsubs.forEach(u => u()); };
 }
+

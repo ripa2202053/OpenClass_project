@@ -71,21 +71,32 @@ router.post('/', verifyAuthToken, async (req, res) => {
   }
 });
 
-// GET /api/classrooms/:classId/quizzes - Get quizzes
+import { safeServerQuery, isQuotaExceededError } from '../utils/quotaGuard.js';
+
+// GET /api/classrooms/:classId/quizzes - Get quizzes for classroom
 router.get('/', verifyAuthToken, async (req, res) => {
+  const { classId } = req.params;
+  const cacheKey = `server_quizzes_${classId}`;
+
   try {
-    const { classId } = req.params;
-    const db = getFirestore();
+    const quizzes = await safeServerQuery(cacheKey, async () => {
+      const db = getFirestore();
 
-    const snapshot = await db.collection('classrooms')
-      .doc(classId)
-      .collection('quizzes')
-      .orderBy('createdAt', 'desc')
-      .get();
+      const snapshot = await db.collection('classrooms')
+        .doc(classId)
+        .collection('quizzes')
+        .orderBy('createdAt', 'desc')
+        .get();
 
-    const quizzes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    }, [], 30000);
+
     return res.json(quizzes);
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn('[Quizzes Route] Firestore RESOURCE_EXHAUSTED. Returning empty quizzes list.');
+      return res.json([]);
+    }
     console.error('Error fetching quizzes:', error);
     return res.status(500).json({ error: 'Failed to fetch quizzes', details: error.message });
   }

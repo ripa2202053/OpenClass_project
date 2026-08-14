@@ -4,6 +4,7 @@ import {
 } from 'firebase/firestore';
 import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { fetchWithAuth } from './utils/api.js';
+import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
 
 
 export const STATUS = { DRAFT: 'draft', PUBLISHED: 'published', CLOSED: 'closed' };
@@ -103,9 +104,11 @@ export async function deleteAssignment(classroomId, assignmentId) {
 }
 
 export function subscribeAssignments(classroomId, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'classrooms', classroomId, 'assignments'), orderBy('createdAt', 'desc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[assignmentService] subscribeAssignments quota warning:', err),
+    'subscribeAssignments'
   );
 }
 
@@ -114,13 +117,15 @@ export function subscribeAllClassroomsAssignments(classroomIds, callback) {
   const unsubs = [];
   const allMap = {};
   classroomIds.forEach(cId => {
-    const u = onSnapshot(
+    const u = safeOnSnapshot(
       query(collection(db, 'classrooms', cId, 'assignments'), orderBy('createdAt', 'desc')),
       (snap) => {
         allMap[cId] = snap.docs.map(d => ({ id: d.id, classroomId: cId, ...d.data() }));
         const merged = Object.values(allMap).flat();
         callback(merged);
-      }
+      },
+      (err) => console.warn(`[assignmentService] subscribeAllClassroomsAssignments quota warning for ${cId}:`, err),
+      `subscribeAllClassroomsAssignments_${cId}`
     );
     unsubs.push(u);
   });
@@ -227,15 +232,20 @@ export async function gradeAssignment(classroomId, assignmentId, studentId, mark
 }
 
 export function subscribeSubmissions(classroomId, assignmentId, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'classrooms', classroomId, 'assignments', assignmentId, 'submissions')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[assignmentService] subscribeSubmissions quota warning:', err),
+    'subscribeSubmissions'
   );
 }
 
 export function subscribeMySubmission(classroomId, assignmentId, uid, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     doc(getFirestore(), 'classrooms', classroomId, 'assignments', assignmentId, 'submissions', uid),
-    (snap) => callback(snap.exists() ? { id: snap.id, ...snap.data() } : null)
+    (snap) => callback(snap.exists() ? { id: snap.id, ...snap.data() } : null),
+    (err) => console.warn('[assignmentService] subscribeMySubmission quota warning:', err),
+    'subscribeMySubmission'
   );
 }
+

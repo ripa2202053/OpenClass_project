@@ -67,10 +67,14 @@ export async function closeQuiz(classroomId, quizId) {
   });
 }
 
+import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
+
 export function subscribeQuizzes(classroomId, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'classrooms', classroomId, 'quizzes'), orderBy('createdAt', 'desc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[quizService] subscribeQuizzes quota warning:', err),
+    'subscribeQuizzes'
   );
 }
 
@@ -162,21 +166,25 @@ export async function submitQuizAttempt(classroomId, quizId, student, answers, t
 }
 
 export function subscribeMyAttempt(classroomId, quizId, uid, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     doc(getFirestore(), 'classrooms', classroomId, 'quizzes', quizId, 'attempts', uid),
-    (snap) => callback(snap.exists() ? { id: snap.id, ...snap.data() } : null)
+    (snap) => callback(snap.exists() ? { id: snap.id, ...snap.data() } : null),
+    (err) => console.warn('[quizService] subscribeMyAttempt quota warning:', err),
+    'subscribeMyAttempt'
   );
 }
 
 export function subscribeAttemptHistory(classroomId, quizId, uid, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'classrooms', classroomId, 'quizzes', quizId, 'attempts', uid, 'history'), orderBy('archivedAt', 'asc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[quizService] subscribeAttemptHistory quota warning:', err),
+    'subscribeAttemptHistory'
   );
 }
 
 export function subscribeLeaderboard(classroomId, quizId, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(
       collection(getFirestore(), 'classrooms', classroomId, 'quizzes', quizId, 'attempts'),
       orderBy('score', 'desc'),
@@ -185,7 +193,9 @@ export function subscribeLeaderboard(classroomId, quizId, callback) {
     (snap) => {
       const list = snap.docs.map((d, i) => ({ rank: i + 1, id: d.id, ...d.data() }));
       callback(list);
-    }
+    },
+    (err) => console.warn('[quizService] subscribeLeaderboard quota warning:', err),
+    'subscribeLeaderboard'
   );
 }
 
@@ -195,17 +205,19 @@ export function subscribeQuizAnalytics(classroomId, quizId, callback) {
   let quizData = null;
   let attempts = [];
 
-  unsubs.push(onSnapshot(doc(db, 'classrooms', classroomId, 'quizzes', quizId), (snap) => {
+  unsubs.push(safeOnSnapshot(doc(db, 'classrooms', classroomId, 'quizzes', quizId), (snap) => {
     quizData = snap.exists() ? { id: snap.id, ...snap.data() } : null;
     emitAnalysis();
-  }));
+  }, null, 'subscribeQuizAnalytics.quiz'));
 
-  unsubs.push(onSnapshot(
+  unsubs.push(safeOnSnapshot(
     query(collection(db, 'classrooms', classroomId, 'quizzes', quizId, 'attempts')),
     (snap) => {
       attempts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       emitAnalysis();
-    }
+    },
+    null,
+    'subscribeQuizAnalytics.attempts'
   ));
 
   function emitAnalysis() {
@@ -258,9 +270,11 @@ export async function saveToQuestionBank(classroomId, question, user) {
 }
 
 export function subscribeQuestionBank(classroomId, callback) {
-  return onSnapshot(
+  return safeOnSnapshot(
     query(collection(getFirestore(), 'classrooms', classroomId, 'questionBank'), orderBy('createdAt', 'desc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.warn('[quizService] subscribeQuestionBank quota warning:', err),
+    'subscribeQuestionBank'
   );
 }
 
