@@ -43,29 +43,37 @@ export async function fetchDashboardStats() {
 
 async function getUserClassroomIds(uid) {
   const db = getFirestore();
+  let cachedIds = [];
   try {
-    const classroomsSnap = await getDocs(
-      query(collection(db, 'classrooms'), where('isActive', '==', true))
-    );
+    const cached = JSON.parse(localStorage.getItem(`user_classrooms_${uid}`) || localStorage.getItem(`openclass_cached_classrooms_${uid}`) || '[]');
+    if (Array.isArray(cached) && cached.length > 0) {
+      cachedIds = cached.map(c => c.classroomId || c.id).filter(Boolean);
+    }
+  } catch (e) {}
+
+  try {
+    const classroomsSnap = await getDocs(collection(db, 'classrooms'));
     const ids = [];
     classroomsSnap.docs.forEach((c) => {
       const data = c.data();
+      if (data.isActive === false || data.isDeleted === true || data.isArchived === true) return;
       if (
         data.createdBy === uid ||
         data.teacherId === uid ||
         data.teacherUid === uid ||
+        data.ownerId === uid ||
         (Array.isArray(data.members) && data.members.includes(uid)) ||
         (Array.isArray(data.enrolledStudents) && data.enrolledStudents.includes(uid))
       ) {
         ids.push(c.id);
       }
     });
-    return ids;
+    return ids.length > 0 ? ids : cachedIds;
   } catch (err) {
     if (isQuotaExceededError(err)) {
       console.warn('[dashboardService] getUserClassroomIds quota exceeded:', err.message);
     }
-    return [];
+    return cachedIds;
   }
 }
 
@@ -73,10 +81,20 @@ export function subscribeDashboardData(uid, role, callback) {
   cleanup();
   const db = getFirestore();
 
+  // Instant delivery from local cached classrooms list
+  let initialCount = 0;
+  try {
+    const cached = JSON.parse(localStorage.getItem(`user_classrooms_${uid}`) || localStorage.getItem(`openclass_cached_classrooms_${uid}`) || '[]');
+    if (Array.isArray(cached) && cached.length > 0) {
+      initialCount = cached.length;
+      callback({ type: 'totalClassrooms', data: initialCount });
+    }
+  } catch (e) {}
+
   // Try fetching API stats first
   fetchDashboardStats().then(stats => {
-    if (stats) {
-      callback({ type: 'totalClassrooms', data: stats.totalClassrooms || 0 });
+    if (stats && stats.totalClassrooms) {
+      callback({ type: 'totalClassrooms', data: stats.totalClassrooms });
       if (role === 'teacher') {
         callback({ type: 'totalStudents', data: stats.totalStudents || 0 });
         callback({ type: 'assignmentsCreated', data: stats.assignmentsCreated || 0 });
@@ -87,9 +105,9 @@ export function subscribeDashboardData(uid, role, callback) {
 
   getUserClassroomIds(uid).then(classroomIds => {
     callback({ type: 'classroomIds', data: classroomIds });
+    callback({ type: 'totalClassrooms', data: Math.max(classroomIds.length, initialCount) });
 
     if (classroomIds.length === 0) {
-      callback({ type: 'totalClassrooms', data: 0 });
       callback({ type: 'pendingAssignments', data: 0 });
       callback({ type: 'unreadMessages', data: 0 });
       callback({ type: 'notices', data: [] });
@@ -107,21 +125,22 @@ export function subscribeDashboardData(uid, role, callback) {
     }
 
     const totalUnsub = safeOnSnapshot(
-      query(collection(db, 'classrooms'), where('isActive', '==', true)),
+      collection(db, 'classrooms'),
       (snap) => {
         let count = 0;
         let pending = 0;
         let totalStudents = 0;
         snap.docs.forEach(d => {
           const cData = d.data();
-          if (classroomIds.includes(d.id) || cData.createdBy === uid || cData.teacherId === uid) {
+          if (cData.isActive === false || cData.isDeleted === true || cData.isArchived === true) return;
+          if (classroomIds.includes(d.id) || cData.createdBy === uid || cData.teacherId === uid || cData.teacherUid === uid) {
             count++;
-            if (cData.createdBy === uid || cData.teacherId === uid) {
+            if (cData.createdBy === uid || cData.teacherId === uid || cData.teacherUid === uid) {
               totalStudents += Math.max(0, (cData.memberCount || 1) - 1);
             }
           }
         });
-        callback({ type: 'totalClassrooms', data: count });
+        callback({ type: 'totalClassrooms', data: Math.max(count, classroomIds.length, initialCount) });
         if (role === 'teacher') {
           callback({ type: 'totalStudents', data: Math.max(0, totalStudents) });
         }

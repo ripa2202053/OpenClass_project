@@ -136,27 +136,7 @@ function getLocalManifest(classId) {
     }
   } catch (err) {}
 
-  if (!list || list.length === 0) {
-    try {
-      const storageBase = path.resolve(__dirname, '../../storage/classrooms');
-      if (fs.existsSync(storageBase)) {
-        const dirs = fs.readdirSync(storageBase);
-        const allFilesMap = new Map();
-        dirs.forEach(d => {
-          const mPath = path.join(storageBase, d, 'files', 'files_manifest.json');
-          if (fs.existsSync(mPath)) {
-            try {
-              const items = JSON.parse(fs.readFileSync(mPath, 'utf8') || '[]');
-              items.forEach(item => allFilesMap.set(item.id || item.fileId, item));
-            } catch (e) {}
-          }
-        });
-        list = Array.from(allFilesMap.values());
-      }
-    } catch (err) {}
-  }
-
-  return list;
+  return Array.isArray(list) ? list.filter(item => !item.classroomId || item.classroomId === classId) : [];
 }
 
 function deleteLocalManifest(classId, fileId) {
