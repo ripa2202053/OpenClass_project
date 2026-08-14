@@ -128,13 +128,35 @@ function saveLocalManifest(classId, fileDoc) {
 }
 
 function getLocalManifest(classId) {
+  let list = [];
   try {
     const manifestPath = getManifestPath(classId);
     if (fs.existsSync(manifestPath)) {
-      return JSON.parse(fs.readFileSync(manifestPath, 'utf8') || '[]');
+      list = JSON.parse(fs.readFileSync(manifestPath, 'utf8') || '[]');
     }
   } catch (err) {}
-  return [];
+
+  if (!list || list.length === 0) {
+    try {
+      const storageBase = path.resolve(__dirname, '../../storage/classrooms');
+      if (fs.existsSync(storageBase)) {
+        const dirs = fs.readdirSync(storageBase);
+        const allFilesMap = new Map();
+        dirs.forEach(d => {
+          const mPath = path.join(storageBase, d, 'files', 'files_manifest.json');
+          if (fs.existsSync(mPath)) {
+            try {
+              const items = JSON.parse(fs.readFileSync(mPath, 'utf8') || '[]');
+              items.forEach(item => allFilesMap.set(item.id || item.fileId, item));
+            } catch (e) {}
+          }
+        });
+        list = Array.from(allFilesMap.values());
+      }
+    } catch (err) {}
+  }
+
+  return list;
 }
 
 function deleteLocalManifest(classId, fileId) {

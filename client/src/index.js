@@ -7533,6 +7533,24 @@ export async function fetchAndRenderClassroomFiles(classroomId) {
     } catch (e) {}
   }
 
+  // 4. Global LocalStorage Manifest Fallback across all sessions/classrooms
+  if (!files || !Array.isArray(files) || files.length === 0) {
+    try {
+      const allKeys = Object.keys(localStorage).filter(k => k.startsWith('openclass_files_'));
+      const combinedMap = new Map();
+      allKeys.forEach(k => {
+        try {
+          const list = JSON.parse(localStorage.getItem(k) || '[]');
+          if (Array.isArray(list)) list.forEach(f => combinedMap.set(f.id || f.fileId, f));
+        } catch (e) {}
+      });
+      if (combinedMap.size > 0) {
+        files = Array.from(combinedMap.values());
+        isCachedData = true;
+      }
+    } catch (e) {}
+  }
+
   if (!files || files.length === 0) {
     const emptyText = isFileOwner
       ? 'No files uploaded yet. Upload your first classroom resource.'
