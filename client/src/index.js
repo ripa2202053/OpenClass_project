@@ -3469,7 +3469,9 @@ async function downloadStreamFile(classId, fileId, name) {
     if (user) {
       try { token = await user.getIdToken(); } catch (e) {}
     }
-    const base = (import.meta.env && (import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://openclass-project.onrender.com' : 'http://localhost:5000'))) || 'http://localhost:5000';
+    const base = (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'))
+      ? 'http://localhost:5000'
+      : 'https://openclass-project.onrender.com';
     const response = await fetch(`${base}/api/classrooms/${classId}/files/${fileId}/download`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });

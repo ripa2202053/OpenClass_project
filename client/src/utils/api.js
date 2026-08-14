@@ -1,6 +1,9 @@
 import { getAuth } from 'firebase/auth';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://openclass-project.onrender.com' : 'http://localhost:5000');
+export const API_BASE_URL = 
+  (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'))
+    ? 'http://localhost:5000'
+    : 'https://openclass-project.onrender.com';
 
 async function getAuthUser() {
   const auth = getAuth();
