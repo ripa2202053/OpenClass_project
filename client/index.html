@@ -1643,62 +1643,87 @@
 
 <!-- ═══════════════════════════ GOOGLE CLASSROOM FULLSCREEN VIEW MODAL ═══════════════════════════ -->
 <div id="modal-classroom-detail" class="modal-overlay gc-fullscreen-overlay" style="display:none">
-  <div class="modal modal-xl gc-fullscreen-modal">
-    <!-- Google Classroom Top Navigation Bar -->
-    <div class="gc-fullscreen-header">
-      <div class="gc-fullscreen-left">
-        <button id="btn-close-classroom-detail" class="gc-back-btn" data-close="modal-classroom-detail">
-          <i class="material-icons">arrow_back</i> <span>Classrooms</span>
+  <div class="modal modal-xl gc-fullscreen-modal" style="display:flex; flex-direction:row !important; width:100vw; height:100vh; overflow:hidden; background:#0b1120;">
+
+    <!-- LEFT SIDEBAR NAVIGATION -->
+    <div class="classroom-sidebar" style="width:260px; min-width:260px; background:#0f172a; border-right:1px solid #1e293b; display:flex; flex-direction:column; justify-content:space-between; height:100vh; padding:20px 16px; flex-shrink:0; overflow-y:auto;">
+      
+      <!-- Top Sidebar: Back Button & Class Code Chip -->
+      <div>
+        <button id="btn-close-classroom-detail" class="gc-back-btn" data-close="modal-classroom-detail" style="width:100%; justify-content:center; padding:10px 16px; border-radius:12px; background:rgba(255,255,255,0.06); border:1px solid #1e293b; color:#f8fafc; font-size:13px; font-weight:600;">
+          <i class="material-icons" style="font-size:18px;">arrow_back</i> <span>Back to Classrooms</span>
         </button>
-        <div class="gc-header-class-info">
-          <h2 id="detail-classroom-name" class="gc-header-title">Classroom Name</h2>
-          <span id="detail-classroom-subtitle" class="gc-header-sub">Section / Subject</span>
+
+        <div style="margin-top:16px; padding:12px 14px; background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.2); border-radius:14px; display:flex; flex-direction:column; gap:6px;">
+          <div style="font-size:11px; font-weight:600; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px;">Classroom Code</div>
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <span id="detail-classroom-code" class="gc-code-chip-hdr" title="Click to copy class code" style="cursor:pointer; font-family:monospace; font-weight:700; font-size:16px; color:#60a5fa; letter-spacing:1px;">
+              <strong id="detail-code-val">XXXXXX</strong>
+            </span>
+            <span id="detail-status-badge" class="badge-status bg-success-dim" style="font-size:10px; padding:2px 8px; border-radius:12px;">Active</span>
+          </div>
+        </div>
+
+        <!-- Vertical Navigation Tabs -->
+        <div class="detail-tabs vertical-tabs" style="margin-top:20px; display:flex; flex-direction:column; gap:6px;">
+          <button class="detail-tab active" data-detail-tab="stream"><i class="material-icons">stream</i> <span>Stream</span></button>
+          <button class="detail-tab" data-detail-tab="stats"><i class="material-icons">assignment</i> <span>Classwork</span></button>
+          <button class="detail-tab" data-detail-tab="members"><i class="material-icons">people</i> <span>People</span></button>
+          <button class="detail-tab" data-detail-tab="files" id="detail-tab-files"><i class="material-icons">folder</i> <span>Files & Resources</span></button>
+          <button class="detail-tab" data-detail-tab="meetings"><i class="material-icons">videocam</i> <span>Meetings</span></button>
+          <button class="detail-tab" data-detail-tab="attendance" id="detail-tab-attendance"><i class="material-icons">fact_check</i> <span>Attendance</span></button>
+          <button class="detail-tab" data-detail-tab="grades" id="detail-tab-grades" style="display:none;"><i class="material-icons">grade</i> <span>My Grades</span></button>
+          <button class="detail-tab" data-detail-tab="info"><i class="material-icons">info</i> <span>Info</span></button>
         </div>
       </div>
 
-      <!-- Google Classroom Top Nav Tabs -->
-      <div class="detail-tabs gc-fullscreen-tabs">
-        <button class="detail-tab active" data-detail-tab="stream"><i class="material-icons">stream</i> Stream</button>
-        <button class="detail-tab" data-detail-tab="stats"><i class="material-icons">assignment</i> Classwork</button>
-        <button class="detail-tab" data-detail-tab="members"><i class="material-icons">people</i> People</button>
-        <button class="detail-tab" data-detail-tab="files" id="detail-tab-files"><i class="material-icons">folder</i> Files & Resources</button>
-        <button class="detail-tab" data-detail-tab="meetings"><i class="material-icons">videocam</i> Meetings</button>
-        <button class="detail-tab" data-detail-tab="attendance" id="detail-tab-attendance"><i class="material-icons">fact_check</i> Attendance</button>
-        <button class="detail-tab" data-detail-tab="grades" id="detail-tab-grades" style="display:none;"><i class="material-icons">grade</i> My Grades</button>
-        <button class="detail-tab" data-detail-tab="info"><i class="material-icons">info</i> Info</button>
+      <!-- Bottom Sidebar: User Profile / Class Shortcut -->
+      <div style="padding-top:16px; border-top:1px solid #1e293b; display:flex; align-items:center; justify-content:space-between;">
+        <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+          <div id="sidebar-user-avatar" style="width:34px; height:34px; border-radius:50%; background:#2563eb; color:white; font-weight:700; font-size:13px; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            <i class="material-icons" style="font-size:18px;">account_circle</i>
+          </div>
+          <div style="min-width:0;">
+            <div id="sidebar-user-name" style="font-size:12px; font-weight:600; color:#f8fafc; text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">OpenClass</div>
+            <div style="font-size:10px; color:#3b82f6; font-weight:500;">Online Workspace</div>
+          </div>
+        </div>
+        <button class="icon-btn" data-close="modal-classroom-detail" title="Close Workspace" style="color:#94a3b8; padding:4px;"><i class="material-icons" style="font-size:18px;">close</i></button>
       </div>
 
-      <div class="gc-fullscreen-right" style="display:flex; align-items:center; gap:12px;">
-        <span id="detail-classroom-code" class="gc-code-chip-hdr" title="Click to copy class code" style="cursor:pointer;">
-          <i class="material-icons" style="font-size:16px;">key</i> Code: <strong id="detail-code-val">XXXXXX</strong>
-        </span>
-        <span id="detail-status-badge" class="badge-status bg-success-dim">Active</span>
-        <button class="icon-btn" data-close="modal-classroom-detail" title="Close"><i class="material-icons">close</i></button>
-      </div>
     </div>
 
-    <!-- Modal Content Body -->
-    <div class="modal-body gc-fullscreen-body" style="padding:0; flex:1; overflow-y:auto;">
-      <!-- Hero Banner Header for Class -->
-      <div class="gc-hero-banner" id="detail-hero-banner" style="background-size:cover; background-position:center; position:relative; min-height:180px; border-radius:16px; margin:20px 32px 0 32px; padding:28px; display:flex; flex-direction:column; justify-content:flex-end; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.3);">
-        <div class="gc-hero-overlay" style="position:absolute; inset:0; background:linear-gradient(180deg, rgba(15,23,42,0.4) 0%, rgba(15,23,42,0.88) 100%); z-index:1;"></div>
-        <div class="gc-hero-content" style="position:relative; z-index:2; display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:16px;">
-          <div>
-            <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px; flex-wrap:wrap;">
-              <h1 id="detail-hero-title" class="gc-hero-title" style="font-size:24px; font-weight:700; color:#ffffff; margin:0; text-shadow:0 2px 4px rgba(0,0,0,0.5);">Classroom Name</h1>
-              <span id="detail-hero-badge" style="background:rgba(30,41,59,0.85); border:1px solid rgba(255,255,255,0.2); color:#e2e8f0; font-size:11px; font-weight:600; padding:4px 12px; border-radius:20px; backdrop-filter:blur(8px);">Course Meta</span>
+    <!-- RIGHT MAIN WORKSPACE CONTENT AREA -->
+    <div class="modal-body gc-fullscreen-body" style="padding:0; flex:1; overflow-y:auto; background:#0b1120;">
+      
+      <!-- Dynamic 3D Themed Hero Banner -->
+      <div class="gc-hero-banner" id="detail-hero-banner" style="background-size:cover; background-position:center; position:relative; min-height:200px; border-radius:18px; margin:24px 32px 0 32px; padding:30px 36px; display:flex; flex-direction:column; justify-content:flex-end; overflow:hidden; box-shadow:0 12px 32px -4px rgba(0,0,0,0.4); border:1px solid #1e293b;">
+        <div class="gc-hero-overlay" style="position:absolute; inset:0; background:linear-gradient(90deg, rgba(15,23,42,0.92) 0%, rgba(15,23,42,0.75) 50%, rgba(15,23,42,0.3) 100%); z-index:1;"></div>
+        <div class="gc-hero-content" style="position:relative; z-index:2; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:20px;">
+          
+          <div style="display:flex; align-items:flex-start; gap:18px; max-width:650px;">
+            <div id="detail-hero-3d-icon" style="width:60px; height:60px; border-radius:16px; background:linear-gradient(135deg, rgba(59,130,246,0.25), rgba(99,102,241,0.15)); border:1px solid rgba(59,130,246,0.4); color:#3b82f6; display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 0 24px rgba(59,130,246,0.35);">
+              <i class="material-icons" style="font-size:32px;">cloud_sync</i>
             </div>
-            <p id="detail-hero-subtitle" class="gc-hero-subtitle" style="font-size:13px; color:rgba(248,250,252,0.85); margin:0;">Section / Subject</p>
-          </div>
-          <div class="gc-hero-teacher-badge" style="display:flex; align-items:center; gap:12px; background:rgba(15,23,42,0.65); backdrop-filter:blur(12px); padding:10px 18px; border-radius:14px; border:1px solid rgba(255,255,255,0.15); box-shadow:0 4px 16px rgba(0,0,0,0.3);">
-            <div id="detail-hero-avatar" class="gc-hero-avatar" style="width:40px; height:40px; border-radius:50%; background-size:cover; background-position:center; background-color:var(--primary); display:flex; align-items:center; justify-content:center; color:white; font-weight:700; border:2px solid rgba(59,130,246,0.4);"></div>
             <div>
-              <div id="detail-hero-teacher-name" style="font-weight:600; font-size:14px; color:#f8fafc;">Teacher Name</div>
-              <div style="font-size:11px; color:#3b82f6; font-weight:500; display:flex; align-items:center; gap:4px;">
-                <i class="material-icons" style="font-size:12px;">verified</i> Lead Instructor
+              <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px; flex-wrap:wrap;">
+                <h1 id="detail-hero-title" class="gc-hero-title" style="font-size:26px; font-weight:800; color:#ffffff; margin:0; letter-spacing:-0.02em; text-shadow:0 2px 8px rgba(0,0,0,0.6);">Classroom Name</h1>
+                <span id="detail-hero-badge" style="background:rgba(30,41,59,0.9); border:1px solid rgba(255,255,255,0.2); color:#60a5fa; font-size:11px; font-weight:700; padding:4px 12px; border-radius:20px; backdrop-filter:blur(8px);">Course Meta</span>
+              </div>
+              <p id="detail-hero-subtitle" class="gc-hero-subtitle" style="font-size:13px; color:rgba(248,250,252,0.85); margin:0; line-height:1.5;">Access lecture slides, documents, syllabus, and course materials.</p>
+            </div>
+          </div>
+
+          <div class="gc-hero-teacher-badge" style="display:flex; align-items:center; gap:14px; background:rgba(15,23,42,0.7); backdrop-filter:blur(16px); padding:12px 20px; border-radius:16px; border:1px solid rgba(255,255,255,0.15); box-shadow:0 8px 24px rgba(0,0,0,0.35);">
+            <div id="detail-hero-avatar" class="gc-hero-avatar" style="width:44px; height:44px; border-radius:50%; background-size:cover; background-position:center; background-color:var(--primary); display:flex; align-items:center; justify-content:center; color:white; font-weight:700; font-size:16px; border:2px solid rgba(59,130,246,0.5);"></div>
+            <div>
+              <div id="detail-hero-teacher-name" style="font-weight:700; font-size:14px; color:#f8fafc;">MST. RIPA KHATUN</div>
+              <div style="font-size:11px; color:#3b82f6; font-weight:600; display:flex; align-items:center; gap:4px;">
+                <i class="material-icons" style="font-size:13px;">verified</i> Lead Instructor
               </div>
             </div>
           </div>
+
         </div>
       </div>
 

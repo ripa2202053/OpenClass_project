@@ -2645,18 +2645,22 @@ function openClassroomDetail(classroom) {
   const heroSub = document.getElementById('detail-hero-subtitle');
   if (heroSub) heroSub.textContent = classroom.description || classroom.section || classroom.subject || 'Access lecture slides, documents, syllabus, and course materials.';
   const heroBadge = document.getElementById('detail-hero-badge');
-  if (heroBadge) heroBadge.textContent = `${classroom.courseCode || classroom.section || classroom.subject || 'Course'} • ${classroom.memberCount || 1} Students`;
+  if (heroBadge) heroBadge.textContent = `${classroom.courseCode || classroom.section || classroom.subject || 'Course'} • ${classroom.memberCount || 1} Enrolled Students`;
   
+  const theme3d = getSubject3DIconAndBg(classroom.subject || '', classroom.classroomName || '');
+  const icon3dEl = document.getElementById('detail-hero-3d-icon');
+  if (icon3dEl) icon3dEl.innerHTML = `<i class="material-icons" style="font-size:32px;">${theme3d.icon}</i>`;
+
   const heroBanner = document.getElementById('detail-hero-banner');
   if (heroBanner) {
     if (classroom.coverImageUrl) {
-      heroBanner.style.backgroundImage = `linear-gradient(180deg, rgba(15,23,42,0.4) 0%, rgba(15,23,42,0.88) 100%), url('${classroom.coverImageUrl}')`;
+      heroBanner.style.backgroundImage = `linear-gradient(90deg, rgba(15,23,42,0.95) 0%, rgba(15,23,42,0.8) 50%, rgba(15,23,42,0.3) 100%), url('${classroom.coverImageUrl}')`;
     } else {
-      heroBanner.style.backgroundImage = `linear-gradient(180deg, rgba(15,23,42,0.4) 0%, rgba(15,23,42,0.88) 100%), url('https://images.unsplash.com/photo-1517694712202-14dd9538aa97?auto=format&fit=crop&w=1200&q=80')`;
+      heroBanner.style.backgroundImage = theme3d.bg;
     }
   }
 
-  const teacherName = classroom.teacherName || 'Teacher';
+  const teacherName = classroom.teacherName || 'MST. RIPA KHATUN';
   const teacherInitials = teacherName.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
   const isCreator = classroom.createdBy === getAuth().currentUser?.uid;
   const teacherPhoto = sanitizeProfilePhotoUrl(classroom.teacherPhotoURL || (isCreator && currentUserProfile?.photoURL) || '', classroom);
@@ -2674,10 +2678,23 @@ function openClassroomDetail(classroom) {
     }
   }
 
-  // Populate Files & Resources Banner
-  const filesBannerName = document.getElementById('files-banner-classroom-name');
-  if (filesBannerName) filesBannerName.textContent = classroom.classroomName || 'Classroom Files & Resources';
-  const filesBannerMeta = document.getElementById('files-banner-course-meta');
+  // Sidebar User Info
+  const sidebarUserName = document.getElementById('sidebar-user-name');
+  if (sidebarUserName && currentUserProfile) {
+    sidebarUserName.textContent = currentUserProfile.displayName || currentUserProfile.name || 'OpenClass User';
+  }
+  const sidebarUserAvatar = document.getElementById('sidebar-user-avatar');
+  if (sidebarUserAvatar && currentUserProfile) {
+    if (currentUserProfile.photoURL) {
+      sidebarUserAvatar.style.backgroundImage = `url('${sanitizeProfilePhotoUrl(currentUserProfile.photoURL, currentUserProfile)}')`;
+      sidebarUserAvatar.style.backgroundSize = 'cover';
+      sidebarUserAvatar.textContent = '';
+    } else {
+      const uInitials = (currentUserProfile.displayName || currentUserProfile.name || 'U').split(' ').map(w => w.charAt(0)).slice(0, 2).join('').toUpperCase();
+      sidebarUserAvatar.style.backgroundImage = '';
+      sidebarUserAvatar.textContent = uInitials;
+    }
+  }
   if (filesBannerMeta) filesBannerMeta.textContent = `${classroom.courseCode || classroom.section || classroom.subject || 'Course'} • ${classroom.memberCount || 1} Members`;
   const filesBannerTeacher = document.getElementById('files-banner-instructor-name');
   if (filesBannerTeacher) filesBannerTeacher.textContent = teacherName;
@@ -7416,13 +7433,36 @@ function getFileIconAndColor(ext = '', mime = '') {
   return { icon: 'insert_drive_file', color: '#94a3b8', label: e.toUpperCase() || 'FILE' };
 }
 
-function formatBytes(bytes, decimals = 1) {
-  if (!bytes || bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+function getSubject3DIconAndBg(subjectName = '', courseName = '') {
+  const text = (subjectName + ' ' + courseName).toLowerCase();
+  if (text.includes('cloud') || text.includes('server') || text.includes('network') || text.includes('aws') || text.includes('azure')) {
+    return {
+      icon: 'cloud_sync',
+      bg: "linear-gradient(90deg, rgba(15,23,42,0.95) 0%, rgba(15,23,42,0.8) 50%, rgba(15,23,42,0.3) 100%), url('https://images.unsplash.com/photo-1544197150-b99a580bb7a8?auto=format&fit=crop&w=1200&q=80')"
+    };
+  }
+  if (text.includes('code') || text.includes('web') || text.includes('program') || text.includes('java') || text.includes('python') || text.includes('react')) {
+    return {
+      icon: 'code',
+      bg: "linear-gradient(90deg, rgba(15,23,42,0.95) 0%, rgba(15,23,42,0.8) 50%, rgba(15,23,42,0.3) 100%), url('https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=1200&q=80')"
+    };
+  }
+  if (text.includes('data') || text.includes('db') || text.includes('sql') || text.includes('database')) {
+    return {
+      icon: 'storage',
+      bg: "linear-gradient(90deg, rgba(15,23,42,0.95) 0%, rgba(15,23,42,0.8) 50%, rgba(15,23,42,0.3) 100%), url('https://images.unsplash.com/photo-1558494949-ef010cbdcc31?auto=format&fit=crop&w=1200&q=80')"
+    };
+  }
+  if (text.includes('ai') || text.includes('ml') || text.includes('intelligence') || text.includes('robot')) {
+    return {
+      icon: 'psychology',
+      bg: "linear-gradient(90deg, rgba(15,23,42,0.95) 0%, rgba(15,23,42,0.8) 50%, rgba(15,23,42,0.3) 100%), url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=1200&q=80')"
+    };
+  }
+  return {
+    icon: 'school',
+    bg: "linear-gradient(90deg, rgba(15,23,42,0.95) 0%, rgba(15,23,42,0.8) 50%, rgba(15,23,42,0.3) 100%), url('https://images.unsplash.com/photo-1517694712202-14dd9538aa97?auto=format&fit=crop&w=1200&q=80')"
+  };
 }
 
 export async function fetchAndRenderClassroomFiles(classroomId) {
