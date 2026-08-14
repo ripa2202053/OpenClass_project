@@ -1,73 +1,85 @@
+import React from 'react';
 import { createRoot } from 'react-dom/client';
-import MeetingRoom from './components/MeetingRoom';
-import './meeting.css';
+import MeetingRoom from './components/MeetingRoom.jsx';
+import { recordMeetingLeave } from '../meetingService.js';
 
-let root = null;
-let hostEl = null;
-let inlineMode = false;
+let meetingRoot = null;
+let currentMeetingState = null;
+let activeUserProfile = null;
 
 export function isMeetingOpen() {
-  return !!hostEl;
-}
-
-/**
- * Mounts the embedded WebRTC meeting UI inside the current page (no new
- * tabs / external URLs). Renders the React MeetingRoom component either
- * into a fullscreen overlay appended to <body> (default) or, when
- * `container` + `inline` are provided, into an existing DOM container so
- * the meeting lives inside the SPA's workspace (e.g. classroom detail).
- */
-export function openInAppMeeting({ roomName, userName, token, meetingId, classroomId, title, inviteLink, onClosed, container, inline } = {}) {
-  if (hostEl) return;
-
-  inlineMode = !!inline;
-
-  if (inlineMode && container) {
-    hostEl = container;
-    container.style.display = 'block';
-  } else {
-    hostEl = document.createElement('div');
-    hostEl.id = 'openclass-meeting-host';
-    document.body.appendChild(hostEl);
-    document.body.style.overflow = 'hidden';
-  }
-
-  root = createRoot(hostEl);
-  root.render(
-    <MeetingRoom
-      roomId={roomName}
-      userName={userName}
-      token={token}
-      meetingId={meetingId}
-      classroomId={classroomId}
-      title={title}
-      inviteLink={inviteLink}
-      inline={inlineMode}
-      onClose={() => {
-        closeInAppMeeting();
-        if (typeof onClosed === 'function') onClosed();
-      }}
-    />,
-  );
+  return currentMeetingState !== null;
 }
 
 export function closeInAppMeeting() {
-  document.body.style.overflow = '';
-  if (root) {
+  if (currentMeetingState && currentMeetingState.meetingId && activeUserProfile) {
+    recordMeetingLeave(currentMeetingState.meetingId, activeUserProfile, currentMeetingState.classroomId).catch(() => {});
+  }
+  if (meetingRoot) {
     try {
-      root.unmount();
-    } catch (err) {
-      /* ignore */
+      meetingRoot.unmount();
+    } catch (e) {
+      console.warn('Meeting root unmount notice:', e);
     }
-    root = null;
+    meetingRoot = null;
   }
-  if (hostEl) {
-    if (inlineMode) {
-      hostEl.style.display = 'none';
-    } else {
-      hostEl.remove();
-    }
-    hostEl = null;
+  const overlay = document.getElementById('inapp-meeting-overlay');
+  if (overlay) {
+    overlay.remove();
   }
-  inlineMode = false;
+  currentMeetingState = null;
+}
+
+export function openInAppMeeting(options = {}, userProfile = null) {
+  activeUserProfile = userProfile;
+  closeInAppMeeting();
+
+  const roomName = options.roomName || options.roomId || 'default-room';
+  const displayName = options.userName || userProfile?.displayName || userProfile?.name || 'User';
+  const meetingId = options.meetingId || options.id || null;
+  const classroomId = options.classroomId || null;
+  const token = options.token || null;
+  const title = options.title || 'OpenClass Live Meeting';
+  const inviteLink = options.inviteLink || window.location.href;
+
+  currentMeetingState = { roomName, meetingId, classroomId };
+
+  let container = options.container;
+  if (!container) {
+    const overlay = document.createElement('div');
+    overlay.id = 'inapp-meeting-overlay';
+    overlay.style.position = 'fixed';
+    overlay.style.top = '0';
+    overlay.style.left = '0';
+    overlay.style.width = '100vw';
+    overlay.style.height = '100vh';
+    overlay.style.zIndex = '99999999';
+    overlay.style.background = '#0f172a';
+    document.body.appendChild(overlay);
+    container = overlay;
+  }
+
+  meetingRoot = createRoot(container);
+  meetingRoot.render(
+    <React.StrictMode>
+      <MeetingRoom
+        roomName={roomName}
+        userName={displayName}
+        token={token}
+        isHost={Boolean(options.isHost)}
+        meetingId={meetingId}
+        classroomId={classroomId}
+        title={title}
+        inviteLink={inviteLink}
+        onLeave={() => {
+          closeInAppMeeting();
+          if (typeof options.onClosed === 'function') options.onClosed();
+        }}
+      />
+    </React.StrictMode>
+  );
+}
+
+export default function MeetingAppHost() {
+  return null;
 }

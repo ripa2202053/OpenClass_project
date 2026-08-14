@@ -187,35 +187,21 @@ service cloud.firestore {
       }
 
       // Meetings sub-collection
+      // Meetings sub-collection
       match /meetings/{meetingId} {
         allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
         allow create: if isAuthenticated() && isClassroomCreator(classroomId);
-        allow update: if isAuthenticated() && isClassroomCreator(classroomId);
-        allow delete: if isAuthenticated() && isClassroomCreator(classroomId);
+        allow update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
 
-        // Attendance sub-collection
         match /attendance/{studentUid} {
           allow read: if isAuthenticated() && (isClassroomCreator(classroomId) || request.auth.uid == studentUid);
           allow write: if isAuthenticated() && (isClassroomCreator(classroomId) || (isClassroomMember(classroomId) && request.auth.uid == studentUid));
         }
 
-        // Persistent Messages / Q&A sub-collection
         match /messages/{messageId} {
           allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
           allow create: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
           allow update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
-        }
-
-        // Live Class Notes sub-collection
-        match /notes/{noteId} {
-          allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
-          allow create, update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
-        }
-
-        // Live Class Resources sub-collection
-        match /resources/{resourceId} {
-          allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
-          allow create, update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
         }
       }
 
@@ -238,7 +224,8 @@ service cloud.firestore {
         isClassroomCreator(resource.data.classroomId) ||
         isClassroomMember(resource.data.classroomId)
       );
-      allow create, update, delete: if isAuthenticated() && isClassroomCreator(request.resource.data.classroomId);
+      allow create: if isAuthenticated() && isClassroomCreator(request.resource.data.classroomId);
+      allow update, delete: if isAuthenticated() && isClassroomCreator(resource.data.classroomId);
     }
 
     // ── User Attendance ─────────────────────────────────────────────────────

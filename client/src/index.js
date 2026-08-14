@@ -65,11 +65,9 @@ import {
 } from './studentService.js';
 import {
   createMeeting, subscribeTeacherMeetings, subscribeClassroomMeetings,
-  updateMeetingStatus, recordMeetingJoin, exportAttendanceCSV
+  subscribeActiveMeetings, updateMeetingStatus, recordMeetingJoin, exportAttendanceCSV
 } from './meetingService.js';
-import { openInAppMeeting as mountMeetingUi, closeInAppMeeting, isMeetingOpen } from './meeting/index.jsx';
-
-import {
+import { openInAppMeeting as mountMeetingUi, closeInAppMeeting, isMeetingOpen } from './meeting/index.jsx';import {
   createAssignment, updateAssignment, deleteAssignment,
   publishAssignment, closeAssignment,
   subscribeAssignments, submitAssignment, gradeAssignment,
@@ -723,6 +721,11 @@ function applyRoleBasedUI(profile) {
     pendingCard.style.display = 'none';
     studentContent.style.display = 'block';
   }
+
+  // Show/Hide Teacher-only UI elements across the app
+  document.querySelectorAll('.teacher-only').forEach((el) => {
+    el.style.display = isUserTeacher ? 'inline-flex' : 'none';
+  });
 
   // Show/Hide Teacher-only navigation items in sidebar
   const approvalsTab = document.querySelector('.nav-item[data-tab="approvals"]');
@@ -1949,9 +1952,15 @@ function handleMeetingDeepLink() {
   if (!roomName) return;
   meetingDeepLinkHandled = true;
   const known = activeMeetingDataList.find((m) => m.roomName === roomName);
-  const meeting = known || { title: 'OpenClass Live Session', roomName, status: 'active' };
+  if (!known || !isAuthorizedMeeting(known, currentUserProfile, userClassrooms)) {
+    showAppToast('This live class is unavailable or you no longer have access.', 'error');
+    const url = new URL(window.location.href);
+    url.searchParams.delete('meeting');
+    window.history.replaceState({}, '', url.toString());
+    return;
+  }
   setTimeout(() => {
-    openInAppMeeting(meeting, currentUserProfile);
+    openInAppMeeting(known, currentUserProfile);
     const url = new URL(window.location.href);
     url.searchParams.delete('meeting');
     window.history.replaceState({}, '', url.toString());
@@ -4506,8 +4515,8 @@ renderClassrooms = function(classrooms, errorMsg) {
   userClassrooms = classrooms;
   try {
   origRC(classrooms, errorMsg);
-  if (document.getElementById('meetings-global-list')) {
-    loadGlobalMeetings();
+  if (currentUserProfile) {
+    initLiveMeetingsModule(currentUserProfile, classrooms);
   }
   if (document.getElementById('tab-attendance')) {
     loadGlobalAttendance();
@@ -5038,7 +5047,7 @@ let openReview = function(classroomId, quiz, attempt) {
 // ─── MEETINGS ────────────────────────────────────────────────
 
 function renderMeetingCard(meeting, isCreatorView) {
-  const isActive = meeting.status === 'active';
+  const isActive = meeting.status === 'active' || meeting.status === 'ongoing';
   const isScheduled = meeting.status === 'scheduled';
   const isEnded = meeting.status === 'ended' || meeting.status === 'cancelled';
   const statusLabel = isActive ? 'Live' : isScheduled ? 'Scheduled' : 'Ended';
@@ -5084,7 +5093,7 @@ function renderMeetings(meetings, containerId, isCreatorView) {
   if (!container) return;
   container.innerHTML = '';
   if (!meetings || meetings.length === 0) {
-    container.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No meetings yet.</div>';
+    container.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No live classes available.</div>';
     return;
   }
   meetings.forEach(m => {
@@ -5172,6 +5181,67 @@ function renderMeetings(meetings, containerId, isCreatorView) {
   });
 }
 
+function meetingIdOf(meeting) {
+  const meetingId = meeting?.id || meeting?.meetingId;
+  return typeof meetingId === 'string' && meetingId.trim() ? meetingId : null;
+}
+
+function isUserClassroomMember(classroom, profileUid) {
+  if (!classroom || !profileUid) return false;
+  if (
+    classroom.createdBy === profileUid ||
+    classroom.teacherId === profileUid ||
+    classroom.teacherUid === profileUid ||
+    classroom.ownerId === profileUid
+  ) {
+    return true;
+  }
+  if (Array.isArray(classroom.students) && classroom.students.includes(profileUid)) return true;
+  if (Array.isArray(classroom.members) && classroom.members.includes(profileUid)) return true;
+  if (Array.isArray(classroom.enrolledStudents) && classroom.enrolledStudents.includes(profileUid)) return true;
+  if (classroom.memberData && classroom.memberData.approved !== false) return true;
+  if (Array.isArray(userClassrooms) && userClassrooms.some(c => (c.classroomId || c.id) === (classroom.classroomId || classroom.id))) {
+    return true;
+  }
+  return false;
+}
+
+function isAuthorizedMeeting(meeting, profile, classrooms, targetClassroomId = null) {
+  const meetingId = meetingIdOf(meeting);
+  const meetingClassroomId = typeof meeting?.classroomId === 'string' && meeting.classroomId.trim()
+    ? meeting.classroomId
+    : null;
+  if (!meetingId || !meetingClassroomId) return false;
+  if (targetClassroomId && String(meetingClassroomId) !== String(targetClassroomId)) return false;
+  if (!profile?.uid) return false;
+
+  // 1. If user created this meeting, authorized immediately
+  const isCreator = meeting.createdBy === profile.uid || meeting.teacherUid === profile.uid || meeting.teacherId === profile.uid;
+  if (isCreator) return true;
+
+  // 2. Search classroom list
+  const rooms = Array.isArray(classrooms) && classrooms.length > 0 ? classrooms : (userClassrooms || []);
+  const classroom = rooms.find((item) => String(item.id || item.classroomId) === String(meetingClassroomId));
+
+  if (classroom) {
+    const isOwner = classroom.createdBy === profile.uid || classroom.teacherId === profile.uid ||
+      classroom.teacherUid === profile.uid || classroom.ownerId === profile.uid;
+    const isMember = isUserClassroomMember(classroom, profile.uid);
+    if (isOwner || isMember) return true;
+  }
+
+  // 3. Fallback: check global userClassrooms array
+  if (Array.isArray(userClassrooms) && userClassrooms.some(c => String(c.classroomId || c.id) === String(meetingClassroomId))) {
+    return true;
+  }
+
+  return false;
+}
+
+function authorizedMeetings(meetings, profile, classrooms, classroomId = null) {
+  return (meetings || []).filter((meeting) => isAuthorizedMeeting(meeting, profile, classrooms, classroomId));
+}
+
 async function openMeetingRoom(meetingId, meetingLink, title, status, creatorUid, classroomId) {
   if (status === 'ended' || status === 'cancelled') {
     showAppToast('This meeting has ended.', 'info');
@@ -5196,11 +5266,7 @@ async function openMeetingRoom(meetingId, meetingLink, title, status, creatorUid
       targetClassroom.teacherUid === profile.uid ||
       targetClassroom.ownerId === profile.uid
     );
-    const isMember = targetClassroom && (
-      isOwner ||
-      (Array.isArray(targetClassroom.enrolledStudents) && targetClassroom.enrolledStudents.includes(profile.uid)) ||
-      (targetClassroom.memberData && targetClassroom.memberData.approved !== false)
-    );
+    const isMember = isUserClassroomMember(targetClassroom, profile.uid);
     if (!targetClassroom || (!isOwner && !isMember)) {
       alert('Access Denied: You must be an approved member of this classroom to join this live class.');
       return;
@@ -5228,172 +5294,9 @@ async function openMeetingRoom(meetingId, meetingLink, title, status, creatorUid
   }, currentUserProfile);
 }
 
-// Global create meeting button
-document.getElementById('btn-create-meeting-global')?.addEventListener('click', () => {
-  if (!currentUserProfile) { alert('Sign in first.'); return; }
-  if (userClassrooms.length === 0) { alert('You must be in a classroom to create meetings.'); return; }
-  document.getElementById('create-meeting-classroom').value = userClassrooms[0].classroomId;
-  document.getElementById('create-meeting-alert').style.display = 'none';
-  document.getElementById('modal-create-meeting').style.display = 'flex';
-});
-
-// Detail create meeting button & empty state triggers
-const openDetailMeetingModal = (type = 'instant') => {
-  if (!currentUserProfile) { alert('Sign in first.'); return; }
-  const cId = detailCurrentClassroomId;
-  if (!cId) { alert('No classroom selected.'); return; }
-  
-  const modalCreateMeeting = document.getElementById('modal-create-meeting');
-  const classroomSelect = document.getElementById('meeting-form-classroom');
-  const typeRadios = document.getElementsByName('meeting-type-radio');
-  const scheduledTimeGroup = document.getElementById('meeting-scheduled-time-group');
-  
-  if (classroomSelect) classroomSelect.value = cId;
-  if (typeRadios) {
-    typeRadios.forEach(r => {
-      if (r.value === type) r.checked = true;
-    });
-    if (scheduledTimeGroup) {
-      scheduledTimeGroup.style.display = (type === 'scheduled') ? 'block' : 'none';
-    }
-  }
-  if (modalCreateMeeting) modalCreateMeeting.style.display = 'flex';
-};
-
-// ─── Embedded classroom meeting (rendered inside the detail workspace) ────
-
-let activeClassroomMeeting = null;
-
-function classroomMeetingRoom(classId) {
-  return `classroom-${classId || 'unknown'}-meeting`;
-}
-
-function closeClassroomMeeting() {
-  if (!activeClassroomMeeting) return;
-  activeClassroomMeeting = null;
-  closeInAppMeeting();
-  const container = document.getElementById('classroom-meeting-host');
-  if (container) container.style.display = 'none';
-  const emptyState = document.getElementById('detail-meetings-empty-state');
-  const content = document.getElementById('detail-meetings-content');
-  if (emptyState) emptyState.style.display = '';
-  if (content) content.style.display = '';
-}
-
-async function openClassroomMeetingInline(meeting, classId, userProfile) {
-  if (isMeetingOpen()) return;
-  const profile = userProfile || currentUserProfile;
-  if (!profile || !profile.uid) {
-    alert('Sign in required to join live class.');
-    return;
-  }
-
-  const targetClassroom = userClassrooms.find(c => (c.id || c.classroomId) === classId);
-  const isOwner = targetClassroom && (
-    targetClassroom.createdBy === profile.uid ||
-    targetClassroom.teacherId === profile.uid ||
-    targetClassroom.teacherUid === profile.uid ||
-    targetClassroom.ownerId === profile.uid
-  );
-  const isMember = targetClassroom && (
-    isOwner ||
-    (Array.isArray(targetClassroom.enrolledStudents) && targetClassroom.enrolledStudents.includes(profile.uid)) ||
-    (targetClassroom.memberData && targetClassroom.memberData.approved !== false)
-  );
-
-  if (!targetClassroom || (!isOwner && !isMember)) {
-    alert('Access Denied: You must be an approved member of this classroom to join this live class.');
-    return;
-  }
-
-  const isTeacherUser = profile && isTeacher(profile);
-  if (!isOwner && !isTeacherUser && meeting.status === 'scheduled') {
-    showAppToast('This class has not been started by the teacher yet. Please wait for your instructor.', 'info');
-    return;
-  }
-
-  // Switch workspace tab to meetings so the meeting host container becomes active and visible
-  if (typeof switchDetailTab === 'function') {
-    switchDetailTab('meetings');
-  }
-
-  const container = document.getElementById('classroom-meeting-host');
-  if (!container) return;
-  const roomName = meeting && meeting.roomName && meeting.roomName !== 'false' && meeting.roomName !== 'null'
-    ? meeting.roomName
-    : null;
-
-  if (!roomName) {
-    alert('Meeting room name is unavailable. Please try launching again.');
-    return;
-  }
-
-  const emptyState = document.getElementById('detail-meetings-empty-state');
-  const content = document.getElementById('detail-meetings-content');
-
-  activeClassroomMeeting = { classId, roomId: roomName, meetingId: meeting.id || null };
-  if (emptyState) emptyState.style.display = 'none';
-  if (content) content.style.display = 'none';
-
-  const auth = getAuth();
-  let token = null;
-  if (auth.currentUser) {
-    try {
-      token = await auth.currentUser.getIdToken();
-    } catch (e) {}
-  }
-
-  mountMeetingUi({
-    roomName,
-    userName: (profile && (profile.displayName || profile.email)) || 'Guest',
-    token,
-    meetingId: meeting.id,
-    classroomId: classId,
-    title: meeting.title || 'OpenClass Live Meeting',
-    inviteLink: buildLocalMeetingLink(roomName),
-    inline: true,
-    container,
-    onClosed: closeClassroomMeeting,
-  });
-
-  if (meeting.id && profile) {
-    recordMeetingJoin(meeting.id, profile).catch((err) => console.warn('Could not record meeting join:', err));
-  }
-}
-
-function startClassroomInstantMeeting() {
-  if (!currentUserProfile) { alert('Sign in first.'); return; }
-  const classId = detailCurrentClassroomId;
-  if (!classId) { alert('No classroom selected.'); return; }
-  if (isMeetingOpen()) { showAppToast('A meeting is already open in this window.', 'info'); return; }
-  const classroom = userClassrooms.find((c) => c.classroomId === classId || c.id === classId);
-  const classroomName = classroom ? classroom.classroomName : 'Classroom';
-  const title = `${classroomName} — Live Session`;
-
-  createMeeting({
-    title,
-    classroomId: classId,
-    classroomName,
-    createdBy: currentUserProfile.uid,
-    teacherName: currentUserProfile.displayName || currentUserProfile.name || 'Teacher',
-    meetingType: 'instant',
-    status: 'ongoing',
-    notifyStudents: true,
-  }).then(meeting => {
-    if (!meeting || !meeting.roomName) {
-      throw new Error('Failed to retrieve persisted meeting room identifier.');
-    }
-    openClassroomMeetingInline(meeting, classId, currentUserProfile);
-  }).catch(err => {
-    console.error('Failed to create instant live class:', err);
-    alert('Failed to start Live Class: ' + (err.message || 'Could not persist meeting session.'));
-  });
-}
-
-// Detail + New Meeting / Instant Meeting → start embedded meeting in-workspace
-document.getElementById('btn-create-meeting-detail')?.addEventListener('click', startClassroomInstantMeeting);
-document.getElementById('btn-detail-empty-instant')?.addEventListener('click', startClassroomInstantMeeting);
-document.getElementById('btn-detail-empty-schedule')?.addEventListener('click', () => openDetailMeetingModal('scheduled'));
+// Meeting modal triggers removed. Meetings page displays placeholder state.
+function openClassroomMeetingInline() {}
+function startClassroomInstantMeeting() {}
 
 // Auto-close the embedded meeting when the classroom detail modal closes
 (function watchClassroomDetailModal() {
@@ -5413,13 +5316,41 @@ function subscribeDetailMeetings(classroomId) {
   });
 }
 
+function isMeetingFresh(meeting) {
+  if (!meeting) return false;
+  if (meeting.status !== 'ongoing' && meeting.status !== 'live') return false;
+
+  const dismissed = JSON.parse(sessionStorage.getItem('dismissed_meetings') || '[]');
+  if (meeting.id && dismissed.includes(meeting.id)) return false;
+
+  let createdMs = 0;
+  if (meeting.createdAt) {
+    if (typeof meeting.createdAt.toMillis === 'function') {
+      createdMs = meeting.createdAt.toMillis();
+    } else if (typeof meeting.createdAt.seconds === 'number') {
+      createdMs = meeting.createdAt.seconds * 1000;
+    } else if (typeof meeting.createdAt === 'number') {
+      createdMs = meeting.createdAt;
+    } else if (typeof meeting.createdAt === 'string') {
+      createdMs = new Date(meeting.createdAt).getTime();
+    }
+  }
+
+  const nowMs = Date.now();
+  // If created more than 15 minutes ago (900000 ms) or missing timestamp, consider it expired / inactive
+  if (!createdMs || isNaN(createdMs) || (nowMs - createdMs) > 15 * 60 * 1000) {
+    return false;
+  }
+  return true;
+}
+
 function renderStreamLiveBanner(ongoingMeeting, classroomId) {
-  const streamMain = document.querySelector('#detail-panel-stream .gc-stream-main') || document.getElementById('detail-panel-stream');
-  if (!streamMain) return;
+  const streamPanel = document.getElementById('detail-panel-stream');
+  if (!streamPanel) return;
 
   let banner = document.getElementById('classroom-stream-live-banner');
 
-  if (!ongoingMeeting) {
+  if (!ongoingMeeting || !isMeetingFresh(ongoingMeeting)) {
     if (banner) banner.remove();
     return;
   }
@@ -5427,26 +5358,57 @@ function renderStreamLiveBanner(ongoingMeeting, classroomId) {
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'classroom-stream-live-banner';
-    streamMain.insertBefore(banner, streamMain.firstChild);
+    streamPanel.insertBefore(banner, streamPanel.firstChild);
   }
 
-  banner.className = 'alert alert-danger';
-  banner.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:16px 22px; background:linear-gradient(135deg, #DC2626 0%, #991B1B 100%); color:#fff; border-radius:14px; margin-bottom:24px; box-shadow:0 6px 18px rgba(220,38,38,0.45); border:none;';
+  const isUserTeacher = currentUserProfile && isTeacher(currentUserProfile);
+
+  banner.className = 'w-full mb-6';
+  banner.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px 24px; background:linear-gradient(135deg, #DC2626 0%, #B91C1C 100%); color:#ffffff; border-radius:16px; box-shadow:0 8px 24px rgba(220,38,38,0.4); border:none; box-sizing:border-box; width:100%; margin-bottom:20px;';
   banner.innerHTML = `
-    <div style="display:flex; align-items:center; gap:14px;">
-      <span style="width:14px; height:14px; border-radius:50%; background:#fff; display:inline-block; box-shadow:0 0 12px #fff;"></span>
-      <div>
-        <div style="font-weight:800; font-size:16px; text-transform:uppercase; letter-spacing:0.5px; color:#fff; margin-bottom:2px;">🔴 LIVE CLASS IN PROGRESS</div>
-        <div style="font-size:13px; color:rgba(255,255,255,0.92); font-weight:500;">${ongoingMeeting.title || 'Live Session'} &bull; Instructor: ${ongoingMeeting.teacherName || ongoingMeeting.createdByName || 'Teacher'}</div>
+    <div style="display:flex; align-items:center; gap:14px; min-width:0;">
+      <span style="width:12px; height:12px; border-radius:50%; background:#ffffff; display:inline-block; box-shadow:0 0 10px #ffffff; shrink:0;" class="animate-pulse"></span>
+      <div style="min-width:0;">
+        <div style="font-weight:800; font-size:15px; text-transform:uppercase; letter-spacing:0.5px; color:#ffffff; margin-bottom:2px;">🔴 LIVE CLASS IN PROGRESS</div>
+        <div style="font-size:13px; color:rgba(255,255,255,0.95); font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+          ${ongoingMeeting.title || 'Live Session'} &bull; Instructor: ${ongoingMeeting.teacherName || ongoingMeeting.createdByName || 'Teacher'}
+        </div>
       </div>
     </div>
-    <button class="btn btn-join-stream-banner-action" style="background:#ffffff; color:#DC2626; font-weight:800; font-size:14px; padding:10px 22px; border-radius:10px; border:none; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.2);">
-      <i class="material-icons" style="font-size:20px; vertical-align:middle; margin-right:6px;">videocam</i> JOIN LIVE CLASS
-    </button>
+    <div style="display:flex; gap:8px; shrink:0; align-items:center;">
+      <button class="btn btn-join-stream-banner-action" style="background:#ffffff; color:#DC2626; font-weight:800; font-size:13px; padding:10px 20px; border-radius:12px; border:none; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,0.2); display:inline-flex; align-items:center; gap:6px; white-space:nowrap;">
+        <i class="material-icons" style="font-size:18px;">videocam</i> ${isUserTeacher ? 'Re-join Class' : 'JOIN LIVE CLASS'}
+      </button>
+      ${isUserTeacher ? `
+        <button class="btn btn-end-stream-banner-action" style="background:rgba(0,0,0,0.3); color:#ffffff; font-weight:700; font-size:13px; padding:10px 18px; border-radius:12px; border:1px solid rgba(255,255,255,0.3); cursor:pointer; display:inline-flex; align-items:center; gap:6px; white-space:nowrap;">
+          <i class="material-icons" style="font-size:18px;">call_end</i> END MEETING
+        </button>
+      ` : ''}
+      <button class="btn btn-dismiss-stream-banner-action" title="Dismiss Banner" style="background:rgba(0,0,0,0.25); color:#ffffff; font-weight:700; font-size:14px; width:34px; height:34px; border-radius:10px; border:1px solid rgba(255,255,255,0.25); cursor:pointer; display:inline-flex; align-items:center; justify-content:center; shrink:0;">
+        <i class="material-icons" style="font-size:18px;">close</i>
+      </button>
+    </div>
   `;
 
   banner.querySelector('.btn-join-stream-banner-action')?.addEventListener('click', () => {
     openInAppMeeting(ongoingMeeting, currentUserProfile);
+  });
+
+  banner.querySelector('.btn-end-stream-banner-action')?.addEventListener('click', async () => {
+    if (!confirm('Are you sure you want to end this live class for everyone?')) return;
+    await updateMeetingStatus(ongoingMeeting.id, 'ended', classroomId || ongoingMeeting.classroomId);
+    if (banner) banner.remove();
+    showAppToast('Live class ended successfully.', 'info');
+  });
+
+  banner.querySelector('.btn-dismiss-stream-banner-action')?.addEventListener('click', async () => {
+    const list = JSON.parse(sessionStorage.getItem('dismissed_meetings') || '[]');
+    if (ongoingMeeting?.id) {
+      list.push(ongoingMeeting.id);
+      sessionStorage.setItem('dismissed_meetings', JSON.stringify(list));
+      await updateMeetingStatus(ongoingMeeting.id, 'ended', classroomId || ongoingMeeting.classroomId);
+    }
+    if (banner) banner.remove();
   });
 }
 
@@ -5454,19 +5416,18 @@ function renderStreamLiveBanner(ongoingMeeting, classroomId) {
  * Renders full meeting features inside Classroom Detail Modal (Meetings Tab)
  */
 function renderClassroomDetailMeetings(meetings = [], classroomId) {
-  const ongoing = (meetings || []).find(m => m.status === 'ongoing' || m.status === 'active' || m.status === 'live');
+  const validMeetings = authorizedMeetings(meetings, currentUserProfile, userClassrooms, classroomId);
+  const ongoing = validMeetings.find(m => isMeetingFresh(m));
   
   // Render Stream Tab Banner whenever an ongoing meeting exists
-  renderStreamLiveBanner(ongoing, classroomId);
-
-  if (activeClassroomMeeting) return;
+  if (typeof isMeetingOpen === 'function' && isMeetingOpen()) return;
   const emptyStateEl = document.getElementById('detail-meetings-empty-state');
   const ongoingWrapper = document.getElementById('detail-meetings-ongoing-wrapper');
   const ongoingCard = document.getElementById('detail-meetings-ongoing-card');
   const upcomingGrid = document.getElementById('detail-meetings-upcoming-grid');
   const historyList = document.getElementById('detail-meetings-history-list');
 
-  if (!meetings || meetings.length === 0) {
+  if (validMeetings.length === 0) {
     if (emptyStateEl) emptyStateEl.style.display = 'block';
     if (ongoingWrapper) ongoingWrapper.style.display = 'none';
     if (upcomingGrid) upcomingGrid.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:20px 0;color:var(--text-muted);grid-column:1/-1;font-size:13px;">No upcoming classes scheduled.</div>';
@@ -5477,8 +5438,8 @@ function renderClassroomDetailMeetings(meetings = [], classroomId) {
   if (emptyStateEl) emptyStateEl.style.display = 'none';
 
   const isUserTeacher = currentUserProfile && isTeacher(currentUserProfile);
-  const upcoming = meetings.filter(m => m.status === 'scheduled');
-  const past = meetings.filter(m => m.status === 'ended' || m.status === 'cancelled');
+  const upcoming = validMeetings.filter(m => m.status === 'scheduled');
+  const past = validMeetings.filter(m => m.status === 'ended' || m.status === 'cancelled');
 
   // Section A: Ongoing Meeting
   if (ongoing && ongoingWrapper && ongoingCard) {
@@ -5510,7 +5471,11 @@ function renderClassroomDetailMeetings(meetings = [], classroomId) {
 
     ongoingCard.querySelector('.btn-end-detail-meeting')?.addEventListener('click', async () => {
       if (!confirm('Are you sure you want to end this live meeting for all students?')) return;
-      await updateMeetingStatus(ongoing.id, 'ended', classroomId);
+      await updateMeetingStatus(ongoing.id, 'ended', classroomId || ongoing.classroomId);
+      if (typeof closeInAppMeeting === 'function') {
+        closeInAppMeeting();
+      }
+      showAppToast('Live meeting ended for all students.', 'info');
     });
   } else if (ongoingWrapper) {
     ongoingWrapper.style.display = 'none';
@@ -5660,7 +5625,11 @@ function loadGlobalMeetings() {
     (meetings) => {
       const container = document.getElementById('meetings-global-list');
       if (!container) return;
-      renderMeetings(meetings, 'meetings-global-list', true);
+      renderMeetings(
+        authorizedMeetings(meetings, currentUserProfile, userClassrooms),
+        'meetings-global-list',
+        Boolean(currentUserProfile && isTeacher(currentUserProfile))
+      );
     }
   );
 }
@@ -7802,19 +7771,14 @@ document.addEventListener('DOMContentLoaded', () => {
   initAIAssistant();
 });
 
-// ─── LIVE MEETINGS DASHBOARD & JITSI VIDEO CALL SDK ──────────────────────
-
-teacherMeetingsUnsub = null;
+// ─── LIVE MEETINGS DASHBOARD MODULE ───────────────────────────────────────
 
 export function initLiveMeetingsModule(userProfile, userClassroomsPassed = []) {
-  if (!userProfile) return;
+  const profile = userProfile || currentUserProfile;
+  const isUserTeacher = profile ? getEffectiveIsTeacher(profile) : true;
 
-  const isUserTeacher = isTeacher(userProfile);
-
-  // 1. Setup "New Meeting" Modal Trigger Buttons
   const btnGlobalNewMeeting = document.getElementById('btn-create-meeting-global');
-  const btnEmptyInstant = document.getElementById('btn-empty-instant-meeting');
-  const btnEmptySchedule = document.getElementById('btn-empty-schedule-meeting');
+  const btnClassroomNewMeeting = document.getElementById('btn-create-classroom-meeting');
   const modalCreateMeeting = document.getElementById('modal-create-meeting');
   const classroomSelect = document.getElementById('meeting-form-classroom');
   const typeRadios = document.getElementsByName('meeting-type-radio');
@@ -7822,10 +7786,23 @@ export function initLiveMeetingsModule(userProfile, userClassroomsPassed = []) {
   const formCreateMeeting = document.getElementById('form-create-meeting');
   const alertEl = document.getElementById('create-meeting-alert');
 
+  // Teacher vs Student button visibility
+  if (btnGlobalNewMeeting) {
+    btnGlobalNewMeeting.style.display = isUserTeacher ? 'inline-flex' : 'none';
+  }
+  if (btnClassroomNewMeeting) {
+    btnClassroomNewMeeting.style.display = isUserTeacher ? 'inline-flex' : 'none';
+  }
+
   // Populate Classroom selection dropdown
+  const currentRooms = (userClassrooms && userClassrooms.length > 0) ? userClassrooms : userClassroomsPassed;
   if (classroomSelect) {
-    classroomSelect.innerHTML = '<option value="">Choose classroom...</option>' + 
-      userClassrooms.map(c => `<option value="${c.classroomId}">${c.classroomName} (${c.courseCode || c.section || c.subject || 'General'})</option>`).join('');
+    if (currentRooms.length > 0) {
+      classroomSelect.innerHTML = '<option value="">Choose classroom...</option>' +
+        currentRooms.map(c => `<option value="${c.classroomId || c.id}">${c.classroomName} (${c.courseCode || c.section || c.subject || 'General'})</option>`).join('');
+    } else {
+      classroomSelect.innerHTML = '<option value="general" selected>General Classroom</option>';
+    }
   }
 
   // Meeting type radio toggle
@@ -7839,165 +7816,206 @@ export function initLiveMeetingsModule(userProfile, userClassroomsPassed = []) {
     });
   }
 
-  const openCreateModal = (defaultType = 'instant') => {
-    const targetModal = document.getElementById('modal-create-meeting');
-    if (!targetModal) return;
+  const openCreateModal = (defaultType = 'instant', targetClassroomId = null) => {
+    const modal = document.getElementById('modal-create-meeting');
+    if (!modal) return;
+    const alert = document.getElementById('create-meeting-alert');
+    const form = document.getElementById('form-create-meeting');
+    const select = document.getElementById('meeting-form-classroom');
+    const radios = document.getElementsByName('meeting-type-radio');
+    const timeGroup = document.getElementById('meeting-scheduled-time-group');
 
-    const selectEl = document.getElementById('meeting-form-classroom');
-    const alertBox = document.getElementById('create-meeting-alert');
-    const formEl = document.getElementById('form-create-meeting');
+    if (alert) alert.style.display = 'none';
+    if (form) form.reset();
 
-    if (alertBox) alertBox.style.display = 'none';
-    if (formEl) formEl.reset();
-
-    const currentRooms = (userClassrooms && userClassrooms.length > 0) ? userClassrooms : userClassroomsPassed;
-    if (selectEl) {
-      selectEl.innerHTML = '<option value="">Choose classroom...</option>' + 
-        currentRooms.map(c => `<option value="${c.classroomId}">${c.classroomName} (${c.courseCode || c.section || c.subject || 'General'})</option>`).join('');
-      
-      if (typeof detailCurrentClassroomId !== 'undefined' && detailCurrentClassroomId) {
-        selectEl.value = detailCurrentClassroomId;
-      } else if (currentRooms.length > 0) {
-        selectEl.value = currentRooms[0].classroomId;
+    const rooms = (userClassrooms && userClassrooms.length > 0) ? userClassrooms : (userClassroomsPassed || []);
+    if (select) {
+      if (rooms.length > 0) {
+        select.innerHTML = '<option value="">Choose classroom...</option>' +
+          rooms.map(c => `<option value="${c.classroomId || c.id}" ${targetClassroomId && String(c.classroomId || c.id) === String(targetClassroomId) ? 'selected' : ''}>${c.classroomName} (${c.courseCode || c.section || c.subject || 'General'})</option>`).join('');
+      } else {
+        select.innerHTML = '<option value="general" selected>General Classroom</option>';
       }
     }
 
-    if (typeRadios) {
-      typeRadios.forEach(r => {
+    if (radios) {
+      radios.forEach(r => {
         if (r.value === defaultType) r.checked = true;
       });
-      if (scheduledTimeGroup) {
-        scheduledTimeGroup.style.display = (defaultType === 'scheduled') ? 'block' : 'none';
+      if (timeGroup) {
+        timeGroup.style.display = (defaultType === 'scheduled') ? 'block' : 'none';
       }
     }
 
-    targetModal.style.display = 'flex';
+    modal.style.zIndex = '1000000';
+    modal.style.display = 'flex';
   };
 
-  if (btnGlobalNewMeeting) btnGlobalNewMeeting.onclick = () => openCreateModal('instant');
-  if (btnEmptyInstant) btnEmptyInstant.onclick = () => openCreateModal('instant');
-  if (btnEmptySchedule) btnEmptySchedule.onclick = () => openCreateModal('scheduled');
-
-  // Form submit handler
-  if (formCreateMeeting) {
-    formCreateMeeting.onsubmit = async (e) => {
-      e.preventDefault();
-      const title = document.getElementById('meeting-form-title')?.value.trim();
-      const classroomId = classroomSelect?.value;
-      const selectedType = Array.from(typeRadios).find(r => r.checked)?.value || 'instant';
-      const scheduledTimeVal = document.getElementById('meeting-form-scheduled-time')?.value;
-      const autoRecord = document.getElementById('meeting-toggle-recording')?.checked;
-      const notifyStudents = document.getElementById('meeting-toggle-notify')?.checked;
-
-      if (!title || !classroomId) {
-        if (alertEl) {
-          alertEl.className = 'alert alert-danger';
-          alertEl.textContent = 'Please enter a title and select a classroom.';
-          alertEl.style.display = 'block';
-        }
-        return;
-      }
-
-      if (selectedType === 'scheduled' && !scheduledTimeVal) {
-        if (alertEl) {
-          alertEl.className = 'alert alert-danger';
-          alertEl.textContent = 'Please select a scheduled date and time.';
-          alertEl.style.display = 'block';
-        }
-        return;
-      }
-
-      const targetClassroom = userClassrooms.find(c => c.classroomId === classroomId);
-
-      try {
-        const newMeeting = await createMeeting({
-          title,
-          classroomId,
-          classroomName: targetClassroom ? targetClassroom.classroomName : 'General Class',
-          createdBy: userProfile.uid,
-          teacherName: userProfile.displayName || 'Teacher',
-          meetingType: selectedType,
-          scheduledTime: selectedType === 'scheduled' ? scheduledTimeVal : null,
-          autoRecord,
-          notifyStudents
-        });
-
-        modalCreateMeeting.style.display = 'none';
-
-        if (selectedType === 'instant') {
-          openInAppMeeting(newMeeting, userProfile);
-        } else {
-          alert(`Meeting '${title}' scheduled successfully!`);
-        }
-      } catch (err) {
-        if (alertEl) {
-          alertEl.className = 'alert alert-danger';
-          alertEl.textContent = err.message || 'Failed to create meeting.';
-          alertEl.style.display = 'block';
-        }
-      }
+  if (btnGlobalNewMeeting) {
+    btnGlobalNewMeeting.onclick = (e) => {
+      if (e) e.preventDefault();
+      openCreateModal('instant');
     };
   }
 
-  // 2. Real-time Meeting Listener Subscription
+  if (btnClassroomNewMeeting) {
+    btnClassroomNewMeeting.onclick = (e) => {
+      if (e) e.preventDefault();
+      const targetId = detailCurrentClassroomId || window._currentDetailClassroom?.id || window._currentDetailClassroom?.classroomId;
+      openCreateModal('instant', targetId);
+    };
+  }
+
+  const btnEmptyNewMeeting = document.getElementById('btn-create-meeting-empty');
+  if (btnEmptyNewMeeting) {
+    btnEmptyNewMeeting.onclick = (e) => {
+      if (e) e.preventDefault();
+      openCreateModal('instant');
+    };
+  }
+
+  // Form submit & button click handler
+  const handleCreateMeetingSubmit = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const rawTopic = document.getElementById('meeting-form-topic')?.value.trim();
+    const topic = rawTopic || 'Live Class Session';
+    const title = document.getElementById('meeting-form-title')?.value.trim() || topic;
+    let classroomId = classroomSelect?.value;
+    if (!classroomId && currentRooms.length > 0) {
+      classroomId = currentRooms[0].classroomId || currentRooms[0].id;
+    }
+    if (!classroomId) classroomId = 'general';
+
+    const selectedType = Array.from(typeRadios).find(r => r.checked)?.value || 'instant';
+    const scheduledTimeVal = document.getElementById('meeting-form-scheduled-time')?.value;
+
+    if (selectedType === 'scheduled' && !scheduledTimeVal) {
+      if (alertEl) {
+        alertEl.className = 'alert alert-danger';
+        alertEl.textContent = 'Please select a scheduled date and time.';
+        alertEl.style.display = 'block';
+      }
+      return;
+    }
+
+    const targetClassroom = currentRooms.find(c => String(c.classroomId || c.id) === String(classroomId));
+
+    try {
+      const newMeeting = await createMeeting({
+        title,
+        topic,
+        className: targetClassroom ? targetClassroom.classroomName : 'General Class',
+        classroomId,
+        classroomName: targetClassroom ? targetClassroom.classroomName : 'General Class',
+        createdBy: userProfile.uid,
+        teacherName: userProfile.displayName || userProfile.name || 'Teacher',
+        meetingType: selectedType,
+        scheduledTime: selectedType === 'scheduled' ? scheduledTimeVal : null,
+        status: selectedType === 'scheduled' ? 'scheduled' : 'ongoing'
+      });
+
+      if (modalCreateMeeting) modalCreateMeeting.style.display = 'none';
+
+      if (selectedType === 'instant') {
+        openInAppMeeting(newMeeting, userProfile);
+      } else {
+        showAppToast(`Meeting '${topic}' scheduled successfully!`, 'success');
+      }
+    } catch (err) {
+      if (alertEl) {
+        alertEl.className = 'alert alert-danger';
+        alertEl.textContent = err.message || 'Failed to create meeting.';
+        alertEl.style.display = 'block';
+      }
+    }
+  };
+
+  if (formCreateMeeting) {
+    formCreateMeeting.onsubmit = handleCreateMeetingSubmit;
+  }
+  const btnSubmitCreateMeeting = document.getElementById('btn-submit-create-meeting');
+  if (btnSubmitCreateMeeting) {
+    btnSubmitCreateMeeting.onclick = handleCreateMeetingSubmit;
+  }
+
+  // Real-time Meeting Listener Subscription
   if (teacherMeetingsUnsub) teacherMeetingsUnsub();
-  
+
   if (isUserTeacher) {
-    teacherMeetingsUnsub = subscribeTeacherMeetings(userProfile.uid, (meetings) => {
-      renderMeetingsDashboard(meetings, userProfile, userClassrooms);
+    const cIds = currentRooms.map(c => c.classroomId || c.id).filter(Boolean);
+    teacherMeetingsUnsub = subscribeTeacherMeetings(userProfile.uid, cIds, (meetings) => {
+      renderMeetingsDashboard(meetings, userProfile, currentRooms);
     });
   } else {
-    const cIds = userClassrooms.map(c => c.classroomId);
+    const cIds = currentRooms.map(c => c.classroomId || c.id);
     if (cIds.length > 0) {
-      teacherMeetingsUnsub = subscribeClassroomMeetings(cIds[0], (meetings) => {
-        renderMeetingsDashboard(meetings, userProfile, userClassrooms);
+      teacherMeetingsUnsub = subscribeActiveMeetings(cIds, (meetings) => {
+        renderMeetingsDashboard(meetings, userProfile, currentRooms);
       });
+    } else {
+      renderMeetingsDashboard([], userProfile, currentRooms);
     }
   }
+
+  // Handle deep-link meeting launcher
+  handleMeetingDeepLink();
 }
 
-/**
- * Renders the 3 main dashboard sections or the Empty State UI
- */
+
+
 export function renderMeetingsDashboard(meetings = [], userProfile = {}, userClassrooms = []) {
   const emptyStateEl = document.getElementById('meetings-empty-state');
+  const emptyTitleEl = document.getElementById('meetings-empty-title');
+  const emptyDescEl = document.getElementById('meetings-empty-desc');
   const ongoingWrapper = document.getElementById('meetings-ongoing-wrapper');
   const ongoingCard = document.getElementById('meetings-ongoing-card');
   const upcomingGrid = document.getElementById('meetings-upcoming-grid');
   const historyList = document.getElementById('meetings-history-list');
 
-  activeMeetingDataList = meetings;
+  const isUserTeacher = isTeacher(userProfile);
+  const validMeetings = authorizedMeetings(meetings, userProfile, userClassrooms);
+  activeMeetingDataList = validMeetings;
 
-  if (!meetings || meetings.length === 0) {
+  if (validMeetings.length === 0) {
     if (emptyStateEl) emptyStateEl.style.display = 'block';
+    if (emptyTitleEl) {
+      emptyTitleEl.textContent = isUserTeacher ? 'No meetings yet.' : 'No meetings available.';
+    }
+    if (emptyDescEl) {
+      emptyDescEl.innerHTML = isUserTeacher
+        ? `<div>Click below to start or schedule a live class session.</div>
+           <button id="btn-create-meeting-empty" class="btn btn-primary" style="margin-top:16px; font-weight:700; padding:10px 22px; border-radius:12px; display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+             <i class="material-icons">add</i> + Create Meeting
+           </button>`
+        : 'Your teacher has not scheduled any live meetings yet.';
+
+      document.getElementById('btn-create-meeting-empty')?.addEventListener('click', () => {
+        document.getElementById('btn-create-meeting-global')?.click();
+      });
+    }
     if (ongoingWrapper) ongoingWrapper.style.display = 'none';
-    if (upcomingGrid) upcomingGrid.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:30px 0;color:var(--text-muted);grid-column:1/-1;">No upcoming classes scheduled.</div>';
-    if (historyList) historyList.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:30px 0;color:var(--text-muted);">No past classes found.</div>';
+    if (upcomingGrid) upcomingGrid.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:24px 0;color:var(--text-muted);grid-column:1/-1;">No upcoming classes scheduled.</div>';
+    if (historyList) historyList.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:24px 0;color:var(--text-muted);">No past classes recorded.</div>';
     return;
   }
 
   if (emptyStateEl) emptyStateEl.style.display = 'none';
 
-  const isUserTeacher = isTeacher(userProfile);
-  const ongoing = meetings.find(m => m.status === 'ongoing');
-  const upcoming = meetings.filter(m => m.status === 'scheduled');
-  const past = meetings.filter(m => m.status === 'ended');
+  const ongoing = validMeetings.find(m => isMeetingFresh(m));
+  const upcoming = validMeetings.filter(m => m.status === 'scheduled');
+  const past = validMeetings.filter(m => m.status === 'ended' || m.status === 'cancelled');
 
-  // Section A: Ongoing Meeting Card
+  // Section A: Ongoing / Active Meeting Card
   if (ongoing && ongoingWrapper && ongoingCard) {
     ongoingWrapper.style.display = 'block';
-    const participantCount = ongoing.participantCount || (ongoing.participants ? ongoing.participants.length : 1);
     ongoingCard.innerHTML = `
       <div>
-        <div style="font-size:18px; font-weight:700; color:var(--text-main); margin-bottom:4px;">${ongoing.title}</div>
-        <div style="font-size:13px; color:var(--text-muted);">${ongoing.classroomName} &bull; Instructor: ${ongoing.teacherName}</div>
-        <div style="margin-top:10px; font-size:12px; color:var(--success); font-weight:600; display:flex; align-items:center; gap:6px;">
-          <i class="material-icons" style="font-size:16px;">people</i> ${participantCount} Active Participants Joined
-        </div>
+        <div style="font-size:18px; font-weight:700; color:var(--text-main); margin-bottom:4px;">${ongoing.className || ongoing.classroomName} &bull; ${ongoing.topic || ongoing.title}</div>
+        <div style="font-size:13px; color:var(--text-muted);">Instructor: ${ongoing.teacherName || 'Teacher'}</div>
       </div>
       <div style="display:flex; gap:10px;">
-        <button class="btn btn-primary btn-rejoin-meeting" data-meeting-id="${ongoing.id}" style="padding:8px 18px;">
-          <i class="material-icons" style="font-size:16px; margin-right:4px;">videocam</i> Re-join Class
+        <button class="btn btn-primary btn-join-live-meeting" data-meeting-id="${ongoing.id}" style="padding:8px 18px; font-weight:600;">
+          <i class="material-icons" style="font-size:16px; margin-right:4px;">videocam</i> ${isUserTeacher ? 'Re-join Class' : 'JOIN MEETING'}
         </button>
         ${isUserTeacher ? `
           <button class="btn btn-outline btn-end-meeting" data-meeting-id="${ongoing.id}" style="color:#EF4444; border-color:#EF4444; padding:8px 16px;">
@@ -8007,13 +8025,14 @@ export function renderMeetingsDashboard(meetings = [], userProfile = {}, userCla
       </div>
     `;
 
-    ongoingCard.querySelector('.btn-rejoin-meeting')?.addEventListener('click', () => {
+    ongoingCard.querySelector('.btn-join-live-meeting')?.addEventListener('click', () => {
       openInAppMeeting(ongoing, userProfile);
     });
 
     ongoingCard.querySelector('.btn-end-meeting')?.addEventListener('click', async () => {
       if (!confirm('Are you sure you want to end this live meeting for all students?')) return;
-      await updateMeetingStatus(ongoing.id, 'ended');
+      await updateMeetingStatus(ongoing.id, 'ended', ongoing.classroomId);
+      showAppToast('Meeting ended.', 'info');
     });
   } else if (ongoingWrapper) {
     ongoingWrapper.style.display = 'none';
@@ -8022,40 +8041,35 @@ export function renderMeetingsDashboard(meetings = [], userProfile = {}, userCla
   // Section B: Upcoming Meetings List
   if (upcomingGrid) {
     if (upcoming.length === 0) {
-      upcomingGrid.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:30px 0;color:var(--text-muted);grid-column:1/-1;">No upcoming classes scheduled.</div>';
+      upcomingGrid.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:24px 0;color:var(--text-muted);grid-column:1/-1;">No upcoming classes scheduled.</div>';
     } else {
       upcomingGrid.innerHTML = upcoming.map(m => {
         const timeStr = m.scheduledTime
           ? new Date(m.scheduledTime.toMillis ? m.scheduledTime.toMillis() : m.scheduledTime).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
           : 'Scheduled';
 
-        let countdownText = 'Starts soon';
-        if (m.scheduledTime) {
-          const diffMs = (m.scheduledTime.toMillis ? m.scheduledTime.toMillis() : new Date(m.scheduledTime).getTime()) - Date.now();
-          if (diffMs > 0) {
-            const diffMins = Math.round(diffMs / 60000);
-            if (diffMins < 60) countdownText = `Starts in ${diffMins} mins`;
-            else countdownText = `Starts in ${Math.round(diffMins / 60)} hours`;
-          } else {
-            countdownText = 'Ready to start';
-          }
-        }
-
         return `
-          <div class="upcoming-meeting-card">
+          <div class="upcoming-meeting-card activity-card" style="padding:16px; border-radius:12px; display:flex; flex-direction:column; justify-content:space-between;">
             <div>
               <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
-                <span class="countdown-badge">🕒 ${countdownText}</span>
-                <span style="font-size:11px; color:var(--text-muted);">${m.classroomName}</span>
+                <span class="countdown-badge" style="font-size:11px; background:rgba(59,130,246,0.1); color:#3B82F6; padding:4px 8px; border-radius:6px; font-weight:600;">📅 Scheduled</span>
+                <span style="font-size:11px; color:var(--text-muted);">${m.className || m.classroomName}</span>
               </div>
-              <h4 style="font-size:15px; font-weight:700; margin:0 0 6px 0; color:var(--text-main);">${m.title}</h4>
+              <h4 style="font-size:15px; font-weight:700; margin:0 0 4px 0; color:var(--text-main);">${m.topic || m.title}</h4>
+              <div style="font-size:12px; color:var(--text-muted); margin-bottom:4px;">Instructor: ${m.teacherName || 'Teacher'}</div>
               <div style="font-size:12px; color:var(--text-muted);"><i class="material-icons" style="font-size:14px; vertical-align:middle;">event</i> ${timeStr}</div>
             </div>
             <div style="display:flex; gap:8px; margin-top:16px;">
+              ${isUserTeacher ? `
               <button class="btn btn-primary btn-start-scheduled-meeting" data-meeting-id="${m.id}" style="flex:1; font-size:12px; padding:6px 12px;">
-                <i class="material-icons" style="font-size:14px; margin-right:4px;">play_arrow</i> Start Class
+                <i class="material-icons" style="font-size:14px; margin-right:4px;">play_arrow</i> Start Meeting
               </button>
-              <button class="btn btn-outline btn-copy-meeting-link" data-link="${m.meetingLink}" style="font-size:12px; padding:6px 10px;" title="Copy Meeting Link">
+              ` : `
+              <button class="btn btn-outline" disabled style="flex:1; font-size:12px; padding:6px 12px; opacity:0.7; cursor:not-allowed;">
+                <i class="material-icons" style="font-size:14px; margin-right:4px;">schedule</i> Waiting for Teacher
+              </button>
+              `}
+              <button class="btn btn-outline btn-copy-meeting-link" data-link="${m.meetingLink || ''}" style="font-size:12px; padding:6px 10px;" title="Copy Meeting Link">
                 <i class="material-icons" style="font-size:14px;">content_copy</i>
               </button>
             </div>
@@ -8068,7 +8082,7 @@ export function renderMeetingsDashboard(meetings = [], userProfile = {}, userCla
           const mId = btn.dataset.meetingId;
           const targetMeeting = upcoming.find(item => item.id === mId);
           if (targetMeeting) {
-            await updateMeetingStatus(mId, 'ongoing');
+            await updateMeetingStatus(mId, 'ongoing', targetMeeting.classroomId);
             openInAppMeeting(targetMeeting, userProfile);
           }
         };
@@ -8079,103 +8093,117 @@ export function renderMeetingsDashboard(meetings = [], userProfile = {}, userCla
           const link = btn.dataset.link;
           if (link) {
             navigator.clipboard.writeText(link);
-            alert('Meeting link copied to clipboard!');
+            showAppToast('Meeting link copied to clipboard!', 'info');
           }
         };
       });
     }
   }
 
-  // Section C: Past Class History & Recordings
+  // Section C: Past Class History
   if (historyList) {
     if (past.length === 0) {
-      historyList.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:30px 0;color:var(--text-muted);">No past classes recorded yet.</div>';
+      historyList.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:24px 0;color:var(--text-muted);">No past classes recorded.</div>';
     } else {
       historyList.innerHTML = past.map(m => {
         const dateStr = m.createdAt
           ? new Date(m.createdAt.toMillis ? m.createdAt.toMillis() : m.createdAt).toLocaleDateString()
           : 'Past';
-        const attendeesCount = (m.participants ? m.participants.length : 0);
         return `
-          <div class="history-meeting-row">
+          <div class="history-meeting-row" style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:10px;">
             <div>
-              <div style="font-weight:600; font-size:14px; color:var(--text-main);">${m.title}</div>
-              <div style="font-size:12px; color:var(--text-muted);">${m.classroomName} &bull; Date: ${dateStr} &bull; ${attendeesCount} Attendees</div>
+              <div style="font-weight:600; font-size:14px; color:var(--text-main);">${m.className || m.classroomName} &bull; ${m.topic || m.title}</div>
+              <div style="font-size:12px; color:var(--text-muted);">Instructor: ${m.teacherName || 'Teacher'} &bull; Date: ${dateStr}</div>
             </div>
-            <div style="display:flex; gap:8px;">
-              <button class="btn btn-outline btn-download-attendance" data-meeting-id="${m.id}" style="font-size:12px; padding:6px 12px;">
-                <i class="material-icons" style="font-size:14px; margin-right:4px;">download</i> Attendance Report (CSV)
-              </button>
-              <button class="btn btn-outline btn-watch-recording" data-link="${m.meetingLink}" style="font-size:12px; padding:6px 12px;">
-                <i class="material-icons" style="font-size:14px; margin-right:4px;">content_copy</i> Copy Invite
-              </button>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:12px; background:rgba(239,68,68,0.1); color:#EF4444; padding:4px 10px; border-radius:6px; font-weight:600;">Meeting Ended</span>
+              ${isUserTeacher ? `
+                <button type="button" class="btn btn-outline btn-download-attendance-history" data-meeting="${m.id}" data-classroom="${m.classroomId || classroomId}" style="padding:6px 12px; font-size:12px; font-weight:600; color:var(--primary); border-color:var(--primary); border-radius:8px; cursor:pointer;">
+                  <i class="material-icons" style="font-size:14px; vertical-align:middle;">download</i> Export CSV
+                </button>
+              ` : ''}
             </div>
           </div>
         `;
       }).join('');
 
-      historyList.querySelectorAll('.btn-download-attendance').forEach(btn => {
-        btn.onclick = () => {
-          const mId = btn.dataset.meetingId;
-          const targetMeeting = past.find(item => item.id === mId);
-          if (targetMeeting) {
-            exportAttendanceCSV(targetMeeting);
-          }
-        };
-      });
-
-      historyList.querySelectorAll('.btn-watch-recording').forEach(btn => {
-        btn.onclick = () => {
-          const link = btn.dataset.link;
-          if (link) {
-            navigator.clipboard.writeText(link);
-            showAppToast('Meeting invite link copied to clipboard.', 'info');
-          }
-        };
-      });
+      if (isUserTeacher) {
+        historyList.querySelectorAll('.btn-download-attendance-history').forEach(btn => {
+          btn.onclick = async () => {
+            const mId = btn.getAttribute('data-meeting');
+            const cId = btn.getAttribute('data-classroom');
+            if (!mId || !cId) return;
+            try {
+              const csvData = await fetchWithAuth(`/api/classrooms/${cId}/meetings/${mId}/attendance?format=csv`);
+              const blob = new Blob([csvData], { type: 'text/csv' });
+              const url = window.URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `Attendance_Report_${mId}.csv`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              showAppToast('Attendance CSV downloaded successfully!', 'success');
+            } catch (err) {
+              showAppToast('Failed to download attendance CSV: ' + err.message, 'error');
+            }
+          };
+        });
+      }
     }
   }
 }
 
-/**
- * Opens the embedded WebRTC meeting UI inside the current page (no new
- * tabs / external URLs). Renders the React meeting component into a
- * fullscreen overlay within the SPA.
- */
+
+
 export async function openInAppMeeting(meeting, userProfile) {
-  if (!meeting) return;
+  const profile = userProfile || currentUserProfile;
+  if (!isAuthorizedMeeting(meeting, profile, userClassrooms)) {
+    showAppToast('You are not authorized to join this meeting.', 'error');
+    return;
+  }
+  if (meeting.status === 'ended' || meeting.status === 'cancelled' || meeting.status === 'closed') {
+    showAppToast('This live class has been ended by the teacher and is no longer available to join.', 'error');
+    return;
+  }
   if (isMeetingOpen()) {
     showAppToast('A meeting is already open in this window.', 'info');
     return;
   }
 
-  // When the classroom detail workspace is open, embed the meeting inside
-  // it (over the Meetings dashboard) instead of the fullscreen overlay.
-  const detailModal = document.getElementById('modal-classroom-detail');
-  const inClassroomDetail = detailModal && detailModal.style.display !== 'none' && detailCurrentClassroomId;
-  if (inClassroomDetail && document.getElementById('classroom-meeting-host')) {
-    return openClassroomMeetingInline(meeting, detailCurrentClassroomId, userProfile);
+  const roomName = meeting.roomName || `OpenClass-${meeting.id || Date.now().toString(36)}`;
+  const displayName = profile?.displayName || profile?.name || profile?.email || 'User';
+  const inviteLink = meeting.meetingLink || window.location.href;
+
+  const auth = getAuth();
+  let token = null;
+  if (auth.currentUser) {
+    try {
+      token = await auth.currentUser.getIdToken();
+    } catch (e) {}
   }
 
-  const roomName = meeting.roomName || `OpenClass-${meeting.id || Date.now().toString(36)}`;
-  const displayName = (userProfile && (userProfile.displayName || userProfile.email)) || 'Guest';
-  const inviteLink = meeting.meetingLink && !meeting.meetingLink.includes('meet.jit.si')
-    ? meeting.meetingLink
-    : buildLocalMeetingLink(roomName);
+  const modalCreateMeeting = document.getElementById('modal-create-meeting');
+  if (modalCreateMeeting) modalCreateMeeting.style.display = 'none';
+
+  const isUserTeacher = isTeacher(profile) || profile.uid === meeting.createdBy || profile.uid === meeting.teacherUid || profile.uid === meeting.teacherId;
 
   mountMeetingUi({
     roomName,
     userName: displayName,
-    title: meeting.title || 'OpenClass Live Meeting',
+    token,
+    isHost: isUserTeacher,
+    meetingId: meeting.id || null,
+    classroomId: meeting.classroomId || null,
+    title: `${meeting.className || meeting.classroomName || 'Class'} — ${meeting.topic || meeting.title || 'Live Session'}`,
     inviteLink,
-  });
+  }, profile);
 
-  if (meeting.id && userProfile) {
+  const targetMeetingId = meeting.id || meeting.meetingId;
+  if (targetMeetingId && profile) {
     try {
-      await recordMeetingJoin(meeting.id, userProfile);
-    } catch (e) {
-      console.warn('Could not record meeting join:', e);
-    }
+      await recordMeetingJoin(targetMeetingId, profile, meeting.classroomId);
+    } catch (e) {}
   }
 }
 
@@ -9818,6 +9846,3 @@ if (document.readyState === 'loading') {
 } else {
   initClassroomFilesModule();
 }
-
-
-

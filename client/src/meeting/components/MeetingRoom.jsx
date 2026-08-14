@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
-import { Loader2, AlertTriangle, Copy, Check, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Loader2, AlertTriangle, Copy, Check, X, Users, Clock, Radio, PhoneOff } from 'lucide-react';
 import useWebRTC from '../hooks/useWebRTC';
 import VideoGrid from './VideoGrid';
 import Controls from './Controls';
 import Sidebar from './Sidebar';
+import { closeInAppMeeting } from '../index';
 
 function formatTime(total) {
   const h = Math.floor(total / 3600);
@@ -13,39 +14,50 @@ function formatTime(total) {
 }
 
 export default function MeetingRoom({
+  roomName,
   roomId,
   userName,
   token,
+  isHost = false,
   meetingId,
   classroomId,
   title = 'Live Meeting',
   inviteLink,
+  onLeave,
   onClose,
   inline = false,
 }) {
   const web = useWebRTC();
+  const activeRoomId = roomName || roomId;
+  const handleClose = () => {
+    try { closeInAppMeeting(); } catch (e) {}
+    if (typeof onLeave === 'function') onLeave();
+    if (typeof onClose === 'function') onClose();
+  };
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarTab, setSidebarTab] = useState('participants');
   const [seconds, setSeconds] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [dismissError, setDismissError] = useState(false);
 
   useEffect(() => {
+    if (!activeRoomId) return;
     web.joinRoom({
-      roomId,
+      roomId: activeRoomId,
       userName,
       token,
-      onMeetingEnded: () => {
-        alert('The teacher has ended this live class.');
-        onClose();
+      isHost,
+      onMeetingEnded: (data) => {
+        alert(data?.message || 'The teacher has ended this live class.');
+        handleClose();
       },
       onKicked: (reason) => {
         alert(reason || 'You were removed from this live class by the teacher.');
-        onClose();
+        handleClose();
       },
     });
-    // Join once per mount; roomId/userName/token are stable for the room lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, userName, token]);
+  }, [activeRoomId, userName, token]);
 
   useEffect(() => {
     const timer = setInterval(() => setSeconds((s) => s + 1), 1000);
@@ -72,7 +84,7 @@ export default function MeetingRoom({
 
   const leave = () => {
     web.leaveRoom();
-    onClose();
+    handleClose();
   };
 
   const handleEndClassForAll = async () => {
@@ -82,97 +94,264 @@ export default function MeetingRoom({
     } catch (err) {
       alert(err.message || 'Failed to end meeting.');
     }
-    onClose();
+    handleClose();
   };
 
   return (
     <div
-      className={
-        inline
-          ? 'relative flex h-full w-full flex-col overflow-hidden rounded-xl bg-surface text-white'
-          : 'fixed inset-0 z-[9999] flex flex-col overflow-hidden bg-surface text-white'
-      }
-      style={{ fontFamily: "'Inter', system-ui, -apple-system, sans-serif" }}
+      style={{
+        position: inline ? 'relative' : 'fixed',
+        inset: 0,
+        zIndex: 99999999,
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100vh',
+        width: '100vw',
+        overflow: 'hidden',
+        backgroundColor: '#0B1120',
+        color: '#FFFFFF',
+        fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
+      }}
     >
-      {/* Top bar */}
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-panel/95 px-4 py-3 backdrop-blur">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="shrink-0 rounded-full bg-red-600 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
-            Live
+      {/* Top Header Bar */}
+      <header
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '12px 24px',
+          backgroundColor: '#172033',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+          zIndex: 100,
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span
+              style={{
+                width: '36px',
+                height: '36px',
+                borderRadius: '12px',
+                backgroundColor: '#4F46E5',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontWeight: '800',
+                fontSize: '14px',
+                color: '#FFF',
+                boxShadow: '0 4px 10px rgba(79, 70, 229, 0.4)',
+              }}
+            >
+              OC
+            </span>
+            <span style={{ fontWeight: '800', fontSize: '16px', letterSpacing: '-0.02em', color: '#FFF' }}>
+              OpenClass
+            </span>
+          </div>
+
+          <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.15)' }} />
+
+          {/* LIVE Badge */}
+          <span
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: '#10B981',
+              color: '#FFF',
+              fontSize: '11px',
+              fontWeight: '800',
+              padding: '3px 10px',
+              borderRadius: '20px',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+            }}
+          >
+            <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#FFF' }} /> LIVE
           </span>
-          <div className="min-w-0">
-            <h2 className="truncate text-sm font-bold text-white sm:text-base">{title}</h2>
-            <p className="flex items-center gap-3 text-[11px] text-slate-400">
-              <span className="flex items-center gap-1">
-                <i className="material-icons" style={{ fontSize: 12 }}>schedule</i> {formatTime(seconds)}
+
+          <div style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+            <h2 style={{ fontSize: '15px', fontWeight: '700', color: '#FFF', margin: 0 }}>{title}</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', fontSize: '12px', color: '#94A3B8', marginTop: '2px' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <Clock size={14} color="#818CF8" /> {formatTime(seconds)}
               </span>
-              <span className="flex items-center gap-1">
-                <i className="material-icons" style={{ fontSize: 12 }}>people</i>{' '}
-                {web.participants.length} Connected
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <Users size={14} color="#34D399" /> {Math.max(1, (web.remoteStreams ? web.remoteStreams.length : 0) + 1)} Connected
               </span>
-            </p>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <Radio size={14} color={web.connected ? '#34D399' : '#FBBF24'} />
+                <span style={{ color: web.connected ? '#34D399' : '#FBBF24', fontWeight: '600' }}>
+                  {web.connected ? 'Connected' : 'Connecting...'}
+                </span>
+              </span>
+            </div>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+
+        {/* Right Header Actions */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
           {inviteLink && (
             <button
               type="button"
               onClick={copyInvite}
-              className="flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-white/10"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                color: '#E2E8F0',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                borderRadius: '12px',
+                padding: '8px 14px',
+                fontSize: '12px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+              }}
             >
-              {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-              {copied ? 'Copied!' : 'Copy Invite'}
+              {copied ? <Check size={14} color="#34D399" /> : <Copy size={14} color="#E2E8F0" />}
+              <span>{copied ? 'Copied!' : 'Copy Link'}</span>
             </button>
           )}
 
-          {web.isHost && (
+          {web.isHost ? (
             <button
               type="button"
               onClick={handleEndClassForAll}
-              title="End Class for All"
-              className="flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-red-500 shadow-md"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                backgroundColor: '#DC2626',
+                color: '#FFF',
+                border: 'none',
+                borderRadius: '12px',
+                padding: '8px 16px',
+                fontSize: '12px',
+                fontWeight: '700',
+                cursor: 'pointer',
+                boxShadow: '0 4px 12px rgba(220, 38, 38, 0.4)',
+              }}
             >
-              🔴 End Class for All
+              <PhoneOff size={14} color="#FFF" />
+              <span>End Class</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={leave}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                color: '#F87171',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                borderRadius: '12px',
+                padding: '8px 14px',
+                fontSize: '12px',
+                fontWeight: '600',
+                cursor: 'pointer',
+              }}
+            >
+              <X size={14} color="#F87171" /> Leave
             </button>
           )}
-
-          <button
-            type="button"
-            onClick={leave}
-            title="Leave meeting"
-            className="flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/10"
-          >
-            <X className="h-3.5 w-3.5" /> Leave
-          </button>
         </div>
       </header>
 
-      {/* Real-time Hand Raised Toast Banner for Teacher Host */}
-      {web.isHost && web.handRaisedToast && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-amber-500 text-slate-950 text-xs font-bold px-4 py-2 rounded-xl shadow-2xl border border-amber-300 animate-bounce">
-          <span>🙋 {web.handRaisedToast.userName} raised their hand</span>
-        </div>
-      )}
-
-      {/* Body */}
-      {!web.connected ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
-          {web.error && (
-            <div className="flex max-w-md items-center gap-2 text-center text-sm text-amber-400">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              {web.error}
+      {/* Main Body */}
+      {!web.connected && !dismissError ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '20px',
+              padding: '36px',
+              maxWidth: '440px',
+              width: '100%',
+              backgroundColor: '#172033',
+              borderRadius: '24px',
+              textAlign: 'center',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.5)',
+            }}
+          >
+            <div
+              style={{
+                width: '56px',
+                height: '56px',
+                borderRadius: '18px',
+                backgroundColor: 'rgba(79, 70, 229, 0.2)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Loader2 size={28} color="#818CF8" style={{ animation: 'spin 1s linear infinite' }} />
             </div>
-          )}
-          <Loader2 className="h-8 w-8 animate-spin text-accent" />
-          <p className="text-sm text-slate-400">Joining room…</p>
+
+            <div>
+              <h3 style={{ fontSize: '18px', fontWeight: '700', color: '#FFF', margin: 0 }}>Connecting to Live Meeting...</h3>
+              <p style={{ fontSize: '13px', color: '#94A3B8', marginTop: '6px', margin: 0 }}>Setting up video stream and audio connection</p>
+            </div>
+
+            {web.error && (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '14px',
+                  borderRadius: '16px',
+                  backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                  border: '1px solid rgba(245, 158, 11, 0.3)',
+                  color: '#FCD34D',
+                  fontSize: '12px',
+                  width: '100%',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '600' }}>
+                  <AlertTriangle size={16} color="#F59E0B" />
+                  <span>Media Access Note</span>
+                </div>
+                <p style={{ margin: 0 }}>{web.error}</p>
+                <button
+                  type="button"
+                  onClick={() => setDismissError(true)}
+                  style={{
+                    marginTop: '6px',
+                    padding: '6px 14px',
+                    backgroundColor: '#F59E0B',
+                    color: '#0F172A',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Continue to Class
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1">
-          <main className="flex min-w-0 flex-1 flex-col pb-28">
+        <div style={{ display: 'flex', flex: 1, position: 'relative', overflow: 'hidden', paddingBottom: '90px' }}>
+          <main style={{ display: 'flex', flex: 1, flexDirection: 'column', overflow: 'hidden' }}>
             <VideoGrid
               participants={web.remoteStreams}
               localStream={web.localStream}
               selfName={web.selfName}
+              selfSocketId={web.selfSocketId}
               isSelfMuted={web.isMuted}
               isSelfCameraOff={web.isCameraOff}
               isSelfPresenting={web.isScreenSharing}
@@ -204,7 +383,7 @@ export default function MeetingRoom({
         </div>
       )}
 
-      {web.connected && (
+      {(web.connected || dismissError) && (
         <Controls
           inline={inline}
           isMuted={web.isMuted}

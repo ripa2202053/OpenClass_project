@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
+import { updateMeetingStatus } from '../../meetingService.js';
 
 const SOCKET_URL = (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'))
   ? 'http://localhost:5000'
@@ -61,8 +62,12 @@ export default function useWebRTC() {
   const publish = useCallback(() => {
     const list = [];
     peersRef.current.forEach((entry, socketId) => {
-      if (entry.stream && entry.meta) {
-        list.push({ socketId, stream: entry.stream, ...entry.meta });
+      if (entry.meta) {
+        list.push({
+          socketId,
+          stream: entry.stream || null,
+          ...entry.meta,
+        });
       }
     });
     setRemoteStreams(list);
@@ -155,7 +160,7 @@ export default function useWebRTC() {
   const connectToPeer = useCallback(
     async (user, initiate) => {
       const targetId = user.socketId;
-      if (peersRef.current.has(targetId)) return;
+      if (!targetId || peersRef.current.has(targetId)) return;
 
       const pc = new RTCPeerConnection(RTC_CONFIG);
       localStreamRef.current?.getTracks().forEach((track) => pc.addTrack(track, localStreamRef.current));
@@ -181,6 +186,7 @@ export default function useWebRTC() {
       };
 
       peersRef.current.set(targetId, { pc, meta: user, stream: null });
+      publish();
 
       if (initiate) {
         try {
@@ -223,11 +229,8 @@ export default function useWebRTC() {
   const onMeetingEndedRef = useRef(null);
   const onKickedRef = useRef(null);
 
-  const joinRoom = useCallback(async ({ roomId: rid, userName, token, onMeetingEnded, onKicked }) => {
+  const setupLocalStream = useCallback(async () => {
     setError(null);
-    onMeetingEndedRef.current = onMeetingEnded;
-    onKickedRef.current = onKicked;
-
     let stream = null;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -252,8 +255,55 @@ export default function useWebRTC() {
       setLocalStream(stream);
       startMicMeter();
     }
+  }, [startMicMeter]);
 
-    if (!socketRef.current) {
+  const leaveRoom = useCallback(() => {
+    if (micLevelRafRef.current) cancelAnimationFrame(micLevelRafRef.current);
+    micLevelRafRef.current = null;
+    peersRef.current.forEach(({ pc }) => {
+      try { pc.close(); } catch { /* ignore */ }
+    });
+    peersRef.current.clear();
+    monitorsRef.current.forEach((stop) => {
+      try { stop(); } catch { /* ignore */ }
+    });
+    monitorsRef.current.clear();
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    screenStreamRef.current = null;
+    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localStreamRef.current = null;
+    cameraTrackRef.current = null;
+    if (speakerCtxRef.current) {
+      try { speakerCtxRef.current.close(); } catch { /* ignore */ }
+      speakerCtxRef.current = null;
+    }
+    socketRef.current?.disconnect();
+    socketRef.current = null;
+    setSelfSocketId(null);
+    setLocalStream(null);
+    setRemoteStreams([]);
+    setMessages([]);
+    setConnected(false);
+    setRoomId('');
+    setIsMuted(false);
+    setIsCameraOff(false);
+    setIsScreenSharing(false);
+    setRaisedHand(false);
+    setHandRaisedToast(null);
+    speakingIdRef.current = null;
+  }, []);
+
+  const joinRoom = useCallback(async ({ roomId: rid, userName, token, isHost: hostRole = false, onMeetingEnded, onKicked }) => {
+    onMeetingEndedRef.current = onMeetingEnded;
+    onKickedRef.current = onKicked;
+    if (socketRef.current) return;
+    setError(null);
+    try {
+      await setupLocalStream();
+    } catch (err) {
+      setError(err.message || 'Media permission denied');
+      return;
+    }
       const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
       socketRef.current = socket;
 
@@ -263,11 +313,23 @@ export default function useWebRTC() {
       });
 
       socket.on('existing-users', (users) => {
-        users.forEach((u) => connectToPeer(u, true));
+        if (Array.isArray(users)) {
+          users.forEach((u) => {
+            if (u.socketId !== socketRef.current?.id) connectToPeer(u, true);
+          });
+        }
+      });
+
+      socket.on('user-joined', (user) => {
+        if (user && user.socketId !== socketRef.current?.id) {
+          connectToPeer(user, false);
+        }
       });
 
       socket.on('user-connected', (user) => {
-        connectToPeer(user, false);
+        if (user && user.socketId !== socketRef.current?.id) {
+          connectToPeer(user, false);
+        }
       });
 
       socket.on('offer', async ({ from, sdp }) => {
@@ -364,9 +426,9 @@ export default function useWebRTC() {
           onKickedRef.current(reason);
         }
       });
-    }
 
-    socketRef.current.emit('join-room', { roomId: rid, userName, token }, (res) => {
+    const isHostUser = Boolean(options.isHost);
+    socketRef.current.emit('join-room', { roomId: rid, userName, token, isHost: isHostUser }, (res) => {
       if (!res?.ok) {
         setError(res?.error || 'Failed to join room.');
         setConnected(false);
@@ -376,22 +438,35 @@ export default function useWebRTC() {
       setSelfName(userName);
       setIsHost(res.isHost);
       setRoomId(rid);
-      setParticipants(res.participants || []);
+      const participantList = res.participants || [];
+      setParticipants(participantList);
       setConnected(true);
+
+      // Auto-connect to all participants who joined before this student (e.g. Sir/Teacher and earlier students)
+      participantList.forEach((p) => {
+        if (p.socketId && p.socketId !== socketRef.current?.id) {
+          connectToPeer(p, true);
+        }
+      });
     });
   }, [connectToPeer, cleanupPeer, publish, startMicMeter, leaveRoom]);
 
   const endMeeting = useCallback((data = {}) => {
-    return new Promise((resolve, reject) => {
-      if (!socketRef.current) return reject(new Error('Socket disconnected'));
-      socketRef.current.emit('end-meeting', { roomId, ...data }, (res) => {
-        if (res?.ok) {
+    return new Promise((resolve) => {
+      const mId = data.meetingId;
+      const cId = data.classroomId;
+      if (mId) {
+        updateMeetingStatus(mId, 'ended', cId).catch(() => {});
+      }
+      if (socketRef.current) {
+        socketRef.current.emit('end-meeting', { roomId, ...data }, (res) => {
           leaveRoom();
-          resolve(res);
-        } else {
-          reject(new Error(res?.error || 'Failed to end meeting'));
-        }
-      });
+          resolve(res || { ok: true });
+        });
+      } else {
+        leaveRoom();
+        resolve({ ok: true });
+      }
     });
   }, [roomId, leaveRoom]);
 
@@ -432,43 +507,6 @@ export default function useWebRTC() {
         }
       });
     });
-  }, []);
-
-  const leaveRoom = useCallback(() => {
-    if (micLevelRafRef.current) cancelAnimationFrame(micLevelRafRef.current);
-    micLevelRafRef.current = null;
-    peersRef.current.forEach(({ pc }) => {
-      try { pc.close(); } catch { /* ignore */ }
-    });
-    peersRef.current.clear();
-    monitorsRef.current.forEach((stop) => {
-      try { stop(); } catch { /* ignore */ }
-    });
-    monitorsRef.current.clear();
-    screenStreamRef.current?.getTracks().forEach((t) => t.stop());
-    screenStreamRef.current = null;
-    localStreamRef.current?.getTracks().forEach((t) => t.stop());
-    localStreamRef.current = null;
-    cameraTrackRef.current = null;
-    if (speakerCtxRef.current) {
-      try { speakerCtxRef.current.close(); } catch { /* ignore */ }
-      speakerCtxRef.current = null;
-    }
-    socketRef.current?.disconnect();
-    socketRef.current = null;
-    setSelfSocketId(null);
-    setLocalStream(null);
-    setRemoteStreams([]);
-    setMessages([]);
-    setConnected(false);
-    setRoomId('');
-    setIsMuted(false);
-    setIsCameraOff(false);
-    setIsScreenSharing(false);
-    setRaisedHand(false);
-    setHandRaisedToast(null);
-    setSpeakingId(null);
-    speakingIdRef.current = null;
   }, []);
 
   const toggleMute = useCallback(() => {

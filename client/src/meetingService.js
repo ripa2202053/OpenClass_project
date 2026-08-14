@@ -1,16 +1,12 @@
 import {
   getFirestore, collection, doc, addDoc, setDoc, updateDoc, getDoc, getDocs,
-  query, where, orderBy, onSnapshot, serverTimestamp, Timestamp
+  query, where, orderBy, onSnapshot, serverTimestamp
 } from 'firebase/firestore';
 import { fetchWithAuth } from './utils/api.js';
 
 // ─── MEETING SERVICE ───────────────────────────────────────────────────────
 
-/**
- * Builds a local deep link that opens the embedded meeting UI inside the SPA
- * (same tab). No external URLs / new tabs.
- */
-function buildMeetingLink(roomName) {
+function buildLocalMeetingLink(roomName) {
   try {
     const url = new URL(window.location.href);
     url.search = '';
@@ -22,279 +18,398 @@ function buildMeetingLink(roomName) {
   }
 }
 
-/**
- * Creates a new meeting record in Firestore & Express API
- */
 export async function createMeeting(data) {
-  if (!data.classroomId) {
-    throw new Error('Classroom ID is required to create a live class.');
-  }
+  if (!data) throw new Error('Meeting data required.');
 
-  // 1. Try Express API first
-  try {
-    const res = await fetchWithAuth(`/api/classrooms/${data.classroomId}/meetings`, {
-      method: 'POST',
-      body: JSON.stringify({
-        title: data.title || 'Live Class Session',
-        description: data.description || '',
-        scheduledAt: data.scheduledTime || null,
-        meetingType: data.meetingType || 'instant',
-      }),
-    });
-    if (res && (res.id || res.roomName)) {
-      return { classroomId: data.classroomId, ...res };
-    }
-  } catch (err) {
-    console.warn('Express API createMeeting failed, falling back to direct Firestore write:', err.message);
-  }
-
-  // 2. Direct Firestore fallback
+  const cId = (data.classroomId && String(data.classroomId).trim()) ? data.classroomId.trim() : 'general';
   const db = getFirestore();
   const roomName = `OpenClass-${(data.classroomName || 'Class').replace(/[^a-zA-Z0-9]/g, '')}-${Date.now().toString(36)}`;
 
   const meetingDoc = {
     title: data.title || 'Live Class Session',
-    classroomId: data.classroomId || '',
+    topic: data.topic || data.title || 'Live Session',
+    className: data.className || data.classroomName || 'General Class',
+    classroomId: cId,
     classroomName: data.classroomName || 'General Class',
     createdBy: data.createdBy || '',
     teacherUid: data.createdBy || '',
-    teacherId: data.createdBy || '',
     teacherName: data.teacherName || 'Teacher',
+    roomName,
     meetingType: data.meetingType || 'instant',
-    scheduledTime: data.scheduledTime ? Timestamp.fromDate(new Date(data.scheduledTime)) : null,
-    autoRecord: !!data.autoRecord,
-    notifyStudents: !!data.notifyStudents,
-    status: data.meetingType === 'instant' ? 'ongoing' : 'scheduled',
-    roomName: roomName,
-    meetingLink: buildMeetingLink(roomName),
-    participants: [],
-    participantCount: data.meetingType === 'instant' ? 1 : 0,
+    scheduledDate: data.scheduledDate || null,
+    scheduledTime: data.scheduledTime || null,
+    status: data.status || (data.meetingType === 'scheduled' ? 'scheduled' : 'ongoing'),
+    meetingLink: buildLocalMeetingLink(roomName),
     createdAt: serverTimestamp(),
-    startedAt: data.meetingType === 'instant' ? serverTimestamp() : null,
-    endedAt: null
+    updatedAt: serverTimestamp()
   };
 
-  const docRef = await addDoc(collection(db, 'meetings'), meetingDoc);
-  const meetingId = docRef.id;
-
-  // Mirror into subcollection with explicit error handling (no silent catch)
+  // 1. Try Express API first
   try {
-    await setDoc(doc(db, 'classrooms', data.classroomId, 'meetings', meetingId), meetingDoc);
-  } catch (subErr) {
-    console.error('Failed to persist meeting to subcollection classrooms/:id/meetings:', subErr);
-    throw new Error(`Failed to persist live class in classroom subcollection: ${subErr.message}`);
-  }
-
-  return { id: meetingId, ...meetingDoc };
-}
-
-/**
- * Subscribes to real-time meetings for a teacher across all their created classrooms
- */
-export function subscribeTeacherMeetings(teacherUid, callback) {
-  const db = getFirestore();
-  const q = query(
-    collection(db, 'meetings'),
-    where('createdBy', '==', teacherUid)
-  );
-
-  return onSnapshot(q, (snapshot) => {
-    const meetings = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    meetings.sort((a, b) => {
-      const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
-      const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
-      return bTime - aTime;
-    });
-    callback(meetings);
-  }, (err) => {
-    console.error('Error fetching teacher meetings:', err);
-    callback([]);
-  });
-}
-
-/**
- * Subscribes to real-time meetings for a student's classroom
- */
-export function subscribeClassroomMeetings(classroomId, callback) {
-  const db = getFirestore();
-  if (!classroomId) {
-    callback([]);
-    return () => {};
-  }
-
-  let activeUnsub = () => {};
-  let isUnsubscribed = false;
-
-  // Subscribe to subcollection meetings
-  const subRef = collection(db, 'classrooms', classroomId, 'meetings');
-  const unsubSub = onSnapshot(subRef, (snapshot) => {
-    if (isUnsubscribed) return;
-    const meetings = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    meetings.sort((a, b) => {
-      const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
-      const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
-      return bTime - aTime;
-    });
-    callback(meetings);
-  }, (err) => {
-    console.warn('Subcollection listener failed, subscribing to top-level meetings fallback:', err.message);
-    if (isUnsubscribed) return;
-
-    const q = query(
-      collection(db, 'meetings'),
-      where('classroomId', '==', classroomId)
-    );
-    const unsubTop = onSnapshot(q, (snap) => {
-      if (isUnsubscribed) return;
-      const meetings = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      meetings.sort((a, b) => {
-        const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
-        const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
-        return bTime - aTime;
+    if (cId && cId !== 'general' && cId !== 'default') {
+      const res = await fetchWithAuth(`/api/classrooms/${cId}/meetings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: meetingDoc.title,
+          topic: meetingDoc.topic,
+          description: data.description || '',
+          scheduledAt: data.scheduledTime || null,
+          meetingType: meetingDoc.meetingType,
+        }),
       });
-      callback(meetings);
-    }, (fallbackErr) => {
-      console.error('Fallback meetings listener error:', fallbackErr);
-      if (!isUnsubscribed) callback([]);
+      if (res && (res.id || res.roomName)) {
+        return { classroomId: cId, ...meetingDoc, ...res };
+      }
+    }
+  } catch (err) {
+    console.warn('Express API createMeeting failed, using direct Firestore write:', err.message);
+  }
+
+  // 2. Direct Firestore Write (Top-level meetings collection guarantees success!)
+  const topRef = doc(collection(db, 'meetings'));
+  const meetingId = topRef.id;
+  const finalDoc = { id: meetingId, ...meetingDoc };
+
+  try {
+    await setDoc(topRef, finalDoc);
+  } catch (err) {
+    console.warn('Firestore top-level setDoc error:', err.message);
+  }
+
+  // 3. Subcollection write if valid classroomId provided
+  if (cId && cId !== 'general' && cId !== 'default') {
+    try {
+      await setDoc(doc(db, 'classrooms', cId, 'meetings', meetingId), finalDoc);
+    } catch (err) {
+      console.warn('Firestore subcollection setDoc error:', err.message);
+    }
+  }
+
+  return finalDoc;
+}
+
+export function subscribeTeacherMeetings(teacherUid, classroomIds, callback) {
+  let cb = callback;
+  let cIds = classroomIds;
+  if (typeof classroomIds === 'function') {
+    cb = classroomIds;
+    cIds = [];
+  }
+  if (!teacherUid) return () => {};
+  const db = getFirestore();
+  const unsubs = [];
+  const meetingsMap = new Map();
+
+  const notify = () => {
+    const allMap = new Map();
+    meetingsMap.forEach((list) => {
+      list.forEach((m) => {
+        if (m && m.id) {
+          allMap.set(m.id, m);
+        }
+      });
     });
+    const combined = Array.from(allMap.values());
+    combined.sort((a, b) => {
+      const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : (new Date(a.createdAt || 0).getTime());
+      const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : (new Date(b.createdAt || 0).getTime());
+      return bTime - aTime;
+    });
+    if (typeof cb === 'function') cb(combined);
+  };
 
-    activeUnsub = unsubTop;
-  });
+  const validIds = Array.isArray(cIds) ? cIds.filter(Boolean) : [];
+  if (validIds.length > 0) {
+    validIds.forEach((cId) => {
+      try {
+        const q = query(
+          collection(db, 'classrooms', cId, 'meetings'),
+          orderBy('createdAt', 'desc')
+        );
+        const unsub = onSnapshot(q, (snapshot) => {
+          const list = snapshot.docs.map((doc) => ({ id: doc.id, classroomId: cId, ...doc.data() }));
+          meetingsMap.set(cId, list);
+          notify();
+        }, (err) => {
+          console.warn(`subscribeTeacherMeetings subcol error for classroom ${cId}:`, err.message);
+        });
+        unsubs.push(unsub);
+      } catch (err) {}
+    });
+  }
 
-  activeUnsub = unsubSub;
+  try {
+    const qTop = query(collection(db, 'meetings'), where('createdBy', '==', teacherUid));
+    const unsubTop = onSnapshot(qTop, (snapshot) => {
+      const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+      meetingsMap.set('top-level', list);
+      notify();
+    }, (err) => {
+      console.warn('subscribeTeacherMeetings top-level fallback:', err.message);
+    });
+    unsubs.push(unsubTop);
+  } catch (err) {}
 
   return () => {
-    isUnsubscribed = true;
-    if (typeof activeUnsub === 'function') {
-      try { activeUnsub(); } catch (e) {}
-    }
+    unsubs.forEach((unsub) => {
+      try { unsub(); } catch (e) {}
+    });
   };
 }
 
-/**
- * Subscribes to real-time meetings across multiple classrooms (global view)
- */
-export function subscribeActiveMeetings(classroomIds, callback) {
+export function subscribeClassroomMeetings(classroomId, callback) {
+  if (!classroomId) return () => {};
   const db = getFirestore();
-  if (!classroomIds || classroomIds.length === 0) {
+
+  try {
+    const q = query(
+      collection(db, 'classrooms', classroomId, 'meetings'),
+      orderBy('createdAt', 'desc')
+    );
+
+    return onSnapshot(q, (snapshot) => {
+      const meetings = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      callback(meetings);
+    }, (err) => {
+      console.warn('subscribeClassroomMeetings error:', err.message);
+      callback([]);
+    });
+  } catch (e) {
+    console.warn('subscribeClassroomMeetings init error:', e);
+    return () => {};
+  }
+}
+
+export function subscribeActiveMeetings(classroomIds, callback) {
+  if (!Array.isArray(classroomIds) || classroomIds.length === 0) {
+    callback([]);
+    return () => {};
+  }
+  const db = getFirestore();
+  const unsubs = [];
+  const classroomMeetingsMap = new Map();
+
+  const notify = () => {
+    const allMap = new Map();
+    classroomMeetingsMap.forEach((list) => {
+      list.forEach((m) => {
+        if (m && m.id) {
+          allMap.set(m.id, m);
+        }
+      });
+    });
+    const combined = Array.from(allMap.values());
+    combined.sort((a, b) => {
+      const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : (new Date(a.createdAt || 0).getTime());
+      const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : (new Date(b.createdAt || 0).getTime());
+      return bTime - aTime;
+    });
+    callback(combined);
+  };
+
+  const validIds = classroomIds.filter(Boolean);
+  if (validIds.length === 0) {
     callback([]);
     return () => {};
   }
 
-  const q = query(
-    collection(db, 'meetings'),
-    where('classroomId', 'in', classroomIds)
-  );
-
-  return onSnapshot(q, (snapshot) => {
-    const meetings = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    meetings.sort((a, b) => {
-      const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
-      const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
-      return bTime - aTime;
-    });
-    callback(meetings);
-  }, (err) => {
-    console.error('Error fetching active meetings:', err);
-    callback([]);
+  validIds.forEach((cId) => {
+    try {
+      const q = query(
+        collection(db, 'classrooms', cId, 'meetings'),
+        orderBy('createdAt', 'desc')
+      );
+      const unsub = onSnapshot(q, (snapshot) => {
+        const list = snapshot.docs.map((doc) => ({ id: doc.id, classroomId: cId, ...doc.data() }));
+        classroomMeetingsMap.set(cId, list);
+        notify();
+      }, (err) => {
+        console.warn(`subscribeActiveMeetings error for classroom ${cId}:`, err.message);
+      });
+      unsubs.push(unsub);
+    } catch (err) {
+      console.warn(`Failed to subscribe to classroom ${cId} meetings:`, err.message);
+    }
   });
+
+  return () => {
+    unsubs.forEach((unsub) => {
+      try { unsub(); } catch (e) {}
+    });
+  };
 }
 
-/**
- * Updates meeting status (e.g. start, end)
- */
-export async function updateMeetingStatus(meetingId, newStatus, classroomId) {
-  if (classroomId && meetingId) {
+export async function updateMeetingStatus(meetingId, status, classroomId) {
+  if (!meetingId) return;
+
+  const db = getFirestore();
+  const updates = { status, updatedAt: serverTimestamp() };
+
+  // 1. Instant Firestore write with setDoc ({ merge: true }) so real-time listeners update IMMEDIATELY!
+  if (classroomId) {
     try {
-      const endpoint = (newStatus === 'ongoing' || newStatus === 'active') ? 'start' : newStatus === 'ended' ? 'end' : null;
-      if (endpoint) {
-        await fetchWithAuth(`/api/classrooms/${classroomId}/meetings/${meetingId}/${endpoint}`, {
-          method: 'POST'
-        });
-      }
-    } catch (err) {
-      console.warn('Express API updateMeetingStatus failed:', err.message);
+      await setDoc(doc(db, 'classrooms', classroomId, 'meetings', meetingId), updates, { merge: true });
+    } catch (e) {
+      console.warn('Firestore subcol status update warning:', e);
     }
   }
 
-  const db = getFirestore();
-  const meetingRef = doc(db, 'meetings', meetingId);
-  const updates = { status: newStatus };
-  if (newStatus === 'ongoing' || newStatus === 'active') {
-    updates.startedAt = serverTimestamp();
-  } else if (newStatus === 'ended') {
-    updates.endedAt = serverTimestamp();
+  try {
+    await setDoc(doc(db, 'meetings', meetingId), updates, { merge: true });
+  } catch (e) {
+    console.warn('Firestore top-level status update warning:', e);
   }
-  await updateDoc(meetingRef, updates).catch(() => {});
 
-  if (classroomId) {
-    await updateDoc(doc(db, 'classrooms', classroomId, 'meetings', meetingId), updates).catch(() => {});
-  }
+  // 2. Also notify backend API
+  try {
+    if (classroomId) {
+      const action = status === 'ongoing' || status === 'live' ? 'start' : 'end';
+      await fetchWithAuth(`/api/classrooms/${classroomId}/meetings/${meetingId}/${action}`, {
+        method: 'POST'
+      });
+    }
+  } catch (err) {}
 }
 
-/**
- * Records a participant joining a meeting for attendance
- */
-export async function recordMeetingJoin(meetingId, userProfile) {
+export async function recordMeetingJoin(meetingId, userProfile, classroomId = null) {
   if (!meetingId || !userProfile) return;
   const db = getFirestore();
-  const meetingRef = doc(db, 'meetings', meetingId);
-  const snap = await getDoc(meetingRef);
-  if (!snap.exists()) return;
+  const uid = userProfile.uid;
 
-  const data = snap.data();
-  const participants = data.participants || [];
-  const existing = participants.find(p => p.uid === userProfile.uid);
+  let name = userProfile.displayName || userProfile.name;
+  if (!name && userProfile.email) {
+    name = userProfile.email.split('@')[0];
+  }
+  if (!name) name = 'Student';
 
-  if (!existing) {
-    participants.push({
-      uid: userProfile.uid,
-      name: userProfile.displayName || 'Participant',
-      role: userProfile.role || 'student',
-      joinedAt: new Date().toISOString()
-    });
-    await updateDoc(meetingRef, {
-      participants: participants,
-      participantCount: participants.length
-    });
+  const email = userProfile.email || '';
+  const now = new Date();
+  const joinTimeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  const record = {
+    studentUid: uid,
+    studentName: name,
+    name: name,
+    displayName: name,
+    studentEmail: email,
+    email: email,
+    status: 'Present',
+    joinTime: joinTimeStr,
+    joinedMs: now.getTime(),
+    leaveTime: 'In Meeting',
+    durationFormatted: 'Active'
+  };
+
+  if (meetingId) {
+    try {
+      await setDoc(doc(db, 'meetings', meetingId, 'attendance', uid), record, { merge: true });
+    } catch (e) {}
+  }
+
+  if (classroomId && meetingId) {
+    try {
+      await setDoc(doc(db, 'classrooms', classroomId, 'meetings', meetingId, 'attendance', uid), record, { merge: true });
+    } catch (e) {}
   }
 }
 
-/**
- * Generates and downloads a CSV Attendance Report for a past meeting
- */
-export function exportAttendanceCSV(meeting) {
-  if (!meeting) return;
+export async function recordMeetingLeave(meetingId, userProfile, classroomId = null) {
+  if (!meetingId || !userProfile) return;
+  const db = getFirestore();
+  const uid = userProfile.uid;
+  const now = new Date();
+  const leaveTimeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-  const title = meeting.title || 'Live Class Session';
-  const classroom = meeting.classroomName || 'Classroom';
-  const dateStr = meeting.createdAt
-    ? new Date(meeting.createdAt.toMillis ? meeting.createdAt.toMillis() : meeting.createdAt).toLocaleDateString()
-    : new Date().toLocaleDateString();
+  const updates = {
+    leaveTime: leaveTimeStr,
+    leftMs: now.getTime()
+  };
 
-  const participants = meeting.participants || [];
+  if (meetingId) {
+    try {
+      await setDoc(doc(db, 'meetings', meetingId, 'attendance', uid), updates, { merge: true });
+    } catch (e) {}
+  }
 
-  let csvContent = `Meeting Title,${title}\n`;
-  csvContent += `Classroom,${classroom}\n`;
-  csvContent += `Date,${dateStr}\n`;
-  csvContent += `Total Attendees,${participants.length}\n\n`;
-  csvContent += `Student Name,Role,Joined At Status\n`;
+  if (classroomId && meetingId) {
+    try {
+      await setDoc(doc(db, 'classrooms', classroomId, 'meetings', meetingId, 'attendance', uid), updates, { merge: true });
+    } catch (e) {}
+  }
+}
 
-  if (participants.length === 0) {
-    csvContent += `No attendance records recorded.,,\n`;
+export async function exportAttendanceCSV(meetingId, classroomId, meetingTitle = 'Live Class Session') {
+  const db = getFirestore();
+  let records = [];
+
+  const mId = typeof meetingId === 'object' ? (meetingId.id || meetingId.meetingId) : meetingId;
+  const cId = typeof meetingId === 'object' ? (meetingId.classroomId || classroomId) : classroomId;
+  const title = typeof meetingId === 'object' ? (meetingId.title || meetingTitle) : meetingTitle;
+
+  // 1. Try Express API first
+  if (cId && mId) {
+    try {
+      const csvData = await fetchWithAuth(`/api/classrooms/${cId}/meetings/${mId}/attendance?format=csv`);
+      if (typeof csvData === 'string' && csvData.includes('Student Name')) {
+        triggerCSVDownload(csvData, `Attendance_${(title || 'Class').replace(/[^a-zA-Z0-9]/g, '_')}.csv`);
+        return;
+      }
+    } catch (err) {
+      console.warn('Express API attendance CSV fetch failed, falling back to direct Firestore fetch:', err.message);
+    }
+  }
+
+  // 2. Direct Firestore fallback query (check both classroom subcol and top-level meetings)
+  if (cId && mId) {
+    try {
+      const snap = await getDocs(collection(db, 'classrooms', cId, 'meetings', mId, 'attendance'));
+      if (!snap.empty) {
+        records = snap.docs.map(doc => doc.data());
+      }
+    } catch (err) {}
+  }
+
+  if (records.length === 0 && mId) {
+    try {
+      const snap = await getDocs(collection(db, 'meetings', mId, 'attendance'));
+      if (!snap.empty) {
+        records = snap.docs.map(doc => doc.data());
+      }
+    } catch (err) {}
+  }
+
+  // Build CSV String with full headers
+  let csv = 'Student Name,Student Email,Status,Join Time,Leave Time,Duration\n';
+  if (records.length === 0) {
+    csv += '"No student records found","N/A","N/A","N/A","N/A","N/A"\n';
   } else {
-    participants.forEach(p => {
-      const timeStr = p.joinedAt ? new Date(p.joinedAt).toLocaleTimeString() : 'Joined';
-      csvContent += `"${p.name}","${p.role}","${timeStr}"\n`;
+    records.forEach(r => {
+      const name = r.studentName || r.name || r.displayName || 'Student';
+      const email = r.studentEmail || r.email || '';
+      const status = r.status || 'Present';
+      const joinTime = r.joinTime || (r.joinedAt ? new Date(r.joinedAt.toMillis ? r.joinedAt.toMillis() : r.joinedAt).toLocaleTimeString() : 'Joined');
+      const leaveTime = r.leaveTime || 'Class Ended';
+      let duration = r.durationFormatted || 'Present';
+      if (r.joinedMs && r.leftMs) {
+        const mins = Math.max(1, Math.round((r.leftMs - r.joinedMs) / 60000));
+        duration = `${mins} mins`;
+      }
+      csv += `"${name}","${email}","${status}","${joinTime}","${leaveTime}","${duration}"\n`;
     });
   }
 
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  triggerCSVDownload(csv, `Attendance_${(title || 'Class').replace(/[^a-zA-Z0-9]/g, '_')}.csv`);
+}
+
+function triggerCSVDownload(csvContent, filename) {
+  const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.setAttribute('href', url);
-  link.setAttribute('download', `Attendance_Report_${(title).replace(/[^a-zA-Z0-9]/g, '_')}_${dateStr.replace(/[^a-zA-Z0-9]/g, '-')}.csv`);
+  link.setAttribute('download', filename);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
