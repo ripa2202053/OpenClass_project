@@ -620,10 +620,11 @@ export function subscribeToUserClassrooms(uid, role, callback) {
     }
   };
 
+  let cached = [];
   try {
-    const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+    cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
     if (Array.isArray(cached) && cached.length > 0) {
-      cached.forEach(c => knownMemberClassroomIds.add(c.classroomId));
+      cached.forEach(c => knownMemberClassroomIds.add(c.classroomId || c.id));
       deliver(cached);
     }
   } catch (e) {}
@@ -633,27 +634,23 @@ export function subscribeToUserClassrooms(uid, role, callback) {
       console.log('[ClassroomService] API /api/classrooms response:', data);
       if (Array.isArray(data)) {
         const formatted = data.map(c => ({ classroomId: c.id || c.classroomId, ...c }));
-        formatted.forEach(c => knownMemberClassroomIds.add(c.classroomId));
-        console.log('[ClassroomService] API returned', formatted.length, 'classroom(s). Delivering.');
-        deliver(formatted);
-      } else if (!hasDelivered) {
-        try {
-          const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
-          deliver(Array.isArray(cached) ? cached : []);
-        } catch (e) {
-          deliver([]);
+        const map = new Map();
+        if (Array.isArray(cached)) {
+          cached.forEach(c => map.set(c.classroomId || c.id, c));
         }
+        formatted.forEach(c => map.set(c.classroomId || c.id, c));
+        const mergedList = Array.from(map.values());
+        mergedList.forEach(c => knownMemberClassroomIds.add(c.classroomId || c.id));
+        console.log('[ClassroomService] API returned merged classroom(s):', mergedList.length);
+        deliver(mergedList);
+      } else if (!hasDelivered) {
+        deliver(cached);
       }
     })
     .catch(err => {
       console.warn('[ClassroomService] Express API fetch classrooms failed/quota:', err.message);
       if (!hasDelivered) {
-        try {
-          const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
-          deliver(Array.isArray(cached) ? cached : []);
-        } catch (e) {
-          deliver([]);
-        }
+        deliver(cached);
       }
     });
 

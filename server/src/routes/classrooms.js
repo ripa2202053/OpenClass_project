@@ -125,12 +125,21 @@ router.get('/', verifyAuthToken, async (req, res) => {
 
         for (const doc of createdSnap.docs) {
           const data = doc.data();
-          if (
+          let isMember = (
             data.createdBy === uid ||
             data.teacherId === uid ||
             (Array.isArray(data.members) && data.members.includes(uid)) ||
             (Array.isArray(data.enrolledStudents) && data.enrolledStudents.includes(uid))
-          ) {
+          );
+
+          if (!isMember) {
+            try {
+              const memberSnap = await db.collection('classrooms').doc(doc.id).collection('members').doc(uid).get();
+              if (memberSnap.exists) isMember = true;
+            } catch (e) {}
+          }
+
+          if (isMember) {
             seenIds.add(doc.id);
             list.push({ id: doc.id, ...data });
           }
