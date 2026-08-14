@@ -772,6 +772,10 @@ export function subscribeToUserClassrooms(uid, role, callback) {
 }
 
 export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
+  if (!classroomId) {
+    if (typeof callback === 'function') callback([]);
+    return () => {};
+  }
   const db = getFirestore();
   
   const deliverMergedMembers = async (subcollDocs = []) => {
@@ -781,7 +785,9 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
     subcollDocs.forEach(d => {
       const data = d.data ? d.data() : d;
       const mUid = d.id || data.uid || data.userId;
-      if (mUid) memberMap.set(mUid, { id: mUid, uid: mUid, ...data });
+      if (mUid) {
+        memberMap.set(mUid, { id: mUid, uid: mUid, ...data });
+      }
     });
 
     // 2. Fetch classroom doc to get teacher & enrolledStudents/members arrays
@@ -813,11 +819,25 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
 
         for (const sUid of studentUids) {
           if (!memberMap.has(sUid)) {
+            let uName = sUid === tUid ? (cData.teacherName || 'Teacher') : 'Enrolled Student';
+            let uEmail = sUid === tUid ? (cData.teacherEmail || '') : '';
+            let uPhoto = sUid === tUid ? (cData.teacherPhotoURL || '') : '';
+            try {
+              const uSnap = await getDoc(doc(db, 'users', sUid));
+              if (uSnap.exists()) {
+                const uData = uSnap.data();
+                uName = uData.displayName || uData.name || uName;
+                uEmail = uData.email || uEmail;
+                uPhoto = uData.photoURL || uPhoto;
+              }
+            } catch (e) {}
+
             memberMap.set(sUid, {
               id: sUid,
               uid: sUid,
-              displayName: sUid === tUid ? (cData.teacherName || 'Teacher') : 'Enrolled Student',
-              email: '',
+              displayName: uName,
+              email: uEmail,
+              photoURL: uPhoto,
               role: sUid === tUid ? 'teacher' : 'student',
               approved: true
             });

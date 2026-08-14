@@ -2620,8 +2620,11 @@ function openClassroomDetail(classroom) {
   if (!classroom) return;
   const modal = document.getElementById('modal-classroom-detail');
   if (!modal) return;
-  detailCurrentClassroomId = classroom.classroomId;
-  detailCurrentClassroomCreatedBy = classroom.createdBy || classroom.classroomId;
+  const classId = classroom.classroomId || classroom.id;
+  classroom.classroomId = classId;
+  detailCurrentClassroomId = classId;
+  detailCurrentClassroomCreatedBy = classroom.createdBy || classroom.teacherId || classroom.teacherUid || classId;
+  window._currentDetailClassroom = classroom;
 
   // Open modal immediately on screen
   modal.classList.add('gc-fullscreen-overlay');
@@ -2923,8 +2926,8 @@ function openClassroomDetail(classroom) {
 
   modal.style.display = 'flex';
   switchDetailTab('stream');
-  subscribeDetailData(classroom.classroomId);
-  window._currentDetailClassroom = classroom;
+  subscribeDetailData(classId);
+  fetchAndRenderClassroomFiles(classId);
   loadClassworkForCurrentClassroom();
 }
 
@@ -3057,11 +3060,14 @@ let subscribeDetailData = function subscribeDetailDataBase(classroomId) {
       return;
     }
     const currentUid = getAuth().currentUser?.uid;
+    const currentClassroom = window._currentDetailClassroom || {};
+    const creatorUid = currentClassroom.createdBy || currentClassroom.teacherId || currentClassroom.teacherUid;
     const isCreatorView = currentUserProfile && isTeacher(currentUserProfile) &&
       classroomId && members.some(m => m.uid === currentUid && m.approved);
 
-    const teachers = members.filter(m => (m.role || '').toLowerCase() === 'teacher');
-    const students = members.filter(m => (m.role || '').toLowerCase() !== 'teacher');
+    const teachers = members.filter(m => (m.role || '').toLowerCase() === 'teacher' || (creatorUid && m.uid === creatorUid));
+    const teacherUids = new Set(teachers.map(t => t.uid));
+    const students = members.filter(m => !teacherUids.has(m.uid));
 
     if (studentsCountEl) studentsCountEl.textContent = `${students.length} student${students.length === 1 ? '' : 's'}`;
 

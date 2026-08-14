@@ -1,5 +1,25 @@
 [
   {
+    "id": "file_1786692323402_9dhu",
+    "fileId": "file_1786692323402_9dhu",
+    "classroomId": "Mysc1V2UEk3zkFdVRf09",
+    "fileName": "Pedagogy_Assessment_BlendedLearning.pptx",
+    "originalName": "Pedagogy_Assessment_BlendedLearning.pptx",
+    "title": "Pedagogy_Assessment_BlendedLearning",
+    "description": "",
+    "fileType": "pptx",
+    "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "fileSize": 279113,
+    "storagePath": "classrooms/Mysc1V2UEk3zkFdVRf09/files/file_1786692323402_9dhu/Pedagogy_Assessment_BlendedLearning.pptx",
+    "downloadURL": "/api/classrooms/Mysc1V2UEk3zkFdVRf09/files/file_1786692323402_9dhu/download",
+    "uploadedBy": "JKQRmuOhcEZw81Np8AfXljCZ2w32",
+    "uploadedByName": "MST. RIPA KHATUN (2202053)",
+    "meetingId": null,
+    "category": "Slides",
+    "createdAt": "2026-08-14T07:25:23.409Z",
+    "updatedAt": "2026-08-14T07:25:23.409Z"
+  },
+  {
     "id": "file_1786683696411_rp1n",
     "fileId": "file_1786683696411_rp1n",
     "classroomId": "Mysc1V2UEk3zkFdVRf09",
