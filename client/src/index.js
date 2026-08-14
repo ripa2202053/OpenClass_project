@@ -2643,24 +2643,19 @@ function openClassroomDetail(classroom) {
   const heroTitle = document.getElementById('detail-hero-title');
   if (heroTitle) heroTitle.textContent = classroom.classroomName || 'Classroom';
   const heroSub = document.getElementById('detail-hero-subtitle');
-  if (heroSub) heroSub.textContent = classroom.description || classroom.section || classroom.subject || 'Access lecture slides, documents, syllabus, and course materials.';
-  const heroBadge = document.getElementById('detail-hero-badge');
-  if (heroBadge) heroBadge.textContent = `${classroom.courseCode || classroom.section || classroom.subject || 'Course'} • ${classroom.memberCount || 1} Enrolled Students`;
+  if (heroSub) heroSub.textContent = classroom.courseCode || classroom.section || classroom.subject || '';
   
-  const theme3d = getSubject3DIconAndBg(classroom.subject || '', classroom.classroomName || '');
-  const icon3dEl = document.getElementById('detail-hero-3d-icon');
-  if (icon3dEl) icon3dEl.innerHTML = `<i class="material-icons" style="font-size:32px;">${theme3d.icon}</i>`;
-
   const heroBanner = document.getElementById('detail-hero-banner');
   if (heroBanner) {
     if (classroom.coverImageUrl) {
-      heroBanner.style.backgroundImage = `linear-gradient(90deg, rgba(15,23,42,0.95) 0%, rgba(15,23,42,0.8) 50%, rgba(15,23,42,0.3) 100%), url('${classroom.coverImageUrl}')`;
+      heroBanner.style.backgroundImage = `url('${classroom.coverImageUrl}')`;
     } else {
-      heroBanner.style.backgroundImage = theme3d.bg;
+      heroBanner.style.backgroundImage = '';
+      heroBanner.style.background = getThemeGradient(classroom.themeColor);
     }
   }
 
-  const teacherName = classroom.teacherName || 'MST. RIPA KHATUN';
+  const teacherName = classroom.teacherName || 'Teacher';
   const teacherInitials = teacherName.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
   const isCreator = classroom.createdBy === getAuth().currentUser?.uid;
   const teacherPhoto = sanitizeProfilePhotoUrl(classroom.teacherPhotoURL || (isCreator && currentUserProfile?.photoURL) || '', classroom);
