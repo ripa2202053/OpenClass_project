@@ -1,6 +1,7 @@
 import express from 'express';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { verifyAuthToken } from '../middleware/auth.js';
+import { emitTeacherEvent } from '../utils/classroomEvents.js';
 
 const router = express.Router({ mergeParams: true });
 const MEETING_BASE_URL = 'https://meet.jit.si/OpenClass';
@@ -198,25 +199,32 @@ router.post('/', verifyAuthToken, async (req, res) => {
       timestamp: now,
     });
 
-    // Notify all enrolled students
-    const membersSnap = await db.collection('classrooms').doc(classId).collection('members').get();
-    const notificationPromises = membersSnap.docs
-      .map(d => d.data())
-      .filter(m => m.uid !== user.uid && m.approved !== false)
-      .map(m => db.collection('notifications').add({
-        recipientId: m.uid,
-        userId: m.uid,
-        classId,
-        type: 'meeting_created',
+    // Dual-layer event: course stream card + per-student notifications
+    // (replaces the old top-level `notifications` fan-out; students now read
+    // their own `users/{uid}/notifications` sub-collection — full data isolation)
+    const className = access.classroomData.classroomName || 'Classroom';
+    const teacherName = meetingData.teacherName || 'Teacher';
+    try {
+      await emitTeacherEvent(classId, access.classroomData, {
+        type: 'meeting',
         title: 'New Live Class Scheduled',
-        message: `A new live class "${title.trim()}" has been scheduled in ${access.classroomData.classroomName || 'your classroom'}.`,
-        body: `A new live class "${title.trim()}" has been scheduled in ${access.classroomData.classroomName || 'your classroom'}.`,
-        isRead: false,
-        read: false,
-        createdAt: new Date().toISOString(),
-      }).catch(() => {}));
-
-    await Promise.all(notificationPromises);
+        message: `${teacherName} scheduled a new live class "${meetingData.title}" in ${className}`,
+        teacherName,
+        teacherId: user.uid,
+        itemId: meetingId,
+        itemType: meetingType || 'scheduled',
+        link: `/classroom/${classId}`,
+        metadata: {
+          title: meetingData.title,
+          scheduledAt: scheduledAt || null,
+          status: meetingData.status,
+          meetingLink: meetingData.meetingLink,
+          roomName: meetingData.roomName,
+        },
+      });
+    } catch (err) {
+      console.warn('[Meetings Route] Stream/notification emit failed (non-blocking):', err.message || err);
+    }
 
     return res.status(201).json({ id: meetingId, ...meetingData });
   } catch (error) {

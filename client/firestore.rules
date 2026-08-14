@@ -134,6 +134,13 @@ service cloud.firestore {
         allow update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
       }
 
+      // Course Stream sub-collection (rich activity feed for the Stream tab)
+      match /stream/{eventId} {
+        allow read: if isAuthenticated() && (isClassroomMember(classroomId) || isClassroomCreator(classroomId));
+        allow create: if isAuthenticated() && isClassroomCreator(classroomId);
+        allow update, delete: if isAuthenticated() && isClassroomCreator(classroomId);
+      }
+
       // Assignments sub-collection
       match /assignments/{assignmentId} {
         allow read: if isAuthenticated() && isClassroomMember(classroomId);
@@ -251,6 +258,16 @@ service cloud.firestore {
       allow create: if isAuthenticated();
       allow update: if isAuthenticated() && request.auth.uid == resource.data.recipientId;
       allow delete: if isAuthenticated() && request.auth.uid == resource.data.recipientId;
+    }
+
+    // ── Per-user notifications sub-collection ───────────────────────────────
+    // Teacher events fan out into each enrolled student's own sub-collection;
+    // students can ONLY read their own notifications (full data isolation).
+    match /users/{userId}/notifications/{notificationId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && request.auth.uid == userId;
+      allow delete: if isAuthenticated() && request.auth.uid == userId;
     }
 
     // ── FCM Tokens ─────────────────────────────────────────────────────────

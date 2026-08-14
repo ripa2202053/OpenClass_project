@@ -1,6 +1,7 @@
 import express from 'express';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { verifyAuthToken } from '../middleware/auth.js';
+import { emitTeacherEvent } from '../utils/classroomEvents.js';
 
 const router = express.Router({ mergeParams: true });
 
@@ -63,6 +64,30 @@ router.post('/', verifyAuthToken, async (req, res) => {
       userName: user.name || user.displayName || user.email || 'Teacher',
       timestamp: now,
     });
+
+    // Dual-layer event: course stream card + per-student notifications
+    let classroomData = null;
+    try {
+      const cDoc = await db.collection('classrooms').doc(classId).get();
+      if (cDoc.exists) classroomData = cDoc.data();
+    } catch (e) {}
+    const className = classroomData ? (classroomData.classroomName || 'Classroom') : 'Classroom';
+    const teacherName = user.name || user.displayName || user.email || 'Teacher';
+    try {
+      await emitTeacherEvent(classId, classroomData || { classroomName: className }, {
+        type: 'quiz',
+        title: `New Quiz: ${title.trim()}`,
+        message: `${teacherName} posted a new quiz "${title.trim()}" in ${className}`,
+        teacherName,
+        teacherId: user.uid,
+        itemId: docRef.id,
+        itemType: 'quiz',
+        link: `/classroom/${classId}`,
+        metadata: { timeLimit: quizData.timeLimit, maxMarks: quizData.maxMarks },
+      });
+    } catch (err) {
+      console.warn('[Quizzes Route] Stream/notification emit failed (non-blocking):', err.message || err);
+    }
 
     return res.status(201).json({ id: docRef.id, ...quizData });
   } catch (error) {

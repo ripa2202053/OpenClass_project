@@ -171,6 +171,7 @@ function deleteLocalManifest(classId, fileId) {
 }
 
 import { safeServerQuery, isQuotaExceededError, clearServerCache } from '../utils/quotaGuard.js';
+import { emitTeacherEvent } from '../utils/classroomEvents.js';
 
 // GET /api/classrooms/:classId/files - List classroom files
 router.get('/', verifyAuthToken, async (req, res) => {
@@ -279,7 +280,7 @@ router.get('/', verifyAuthToken, async (req, res) => {
 router.post('/', verifyAuthToken, async (req, res) => {
   try {
     const classId = req.params.classId || req.params.id;
-    const { fileName, originalName, title, description, fileData, fileType, mimeType, fileSize, meetingId, category } = req.body;
+    const { fileName, originalName, originalFileName, lectureTitle, title, description, fileData, fileType, mimeType, fileSize, meetingId, category, uploaderPhotoURL } = req.body;
     const user = req.user;
     const db = getFirestore();
 
@@ -353,6 +354,8 @@ router.post('/', verifyAuthToken, async (req, res) => {
       classroomId: classId,
       fileName: cleanOriginalName,
       originalName: cleanOriginalName,
+      originalFileName: sanitizeFileName(originalFileName || cleanOriginalName, 'file'),
+      lectureTitle: (lectureTitle || '').trim() || (title || cleanOriginalName).trim(),
       title: (title || cleanOriginalName).trim(),
       description: (description || '').trim(),
       fileType: ext,
@@ -362,6 +365,7 @@ router.post('/', verifyAuthToken, async (req, res) => {
       downloadURL,
       uploadedBy: user.uid,
       uploadedByName: user.name || user.displayName || user.email || 'Teacher',
+      uploadedByPhotoURL: user.picture || user.photoURL || uploaderPhotoURL || '',
       meetingId: meetingId || null,
       category: category || deriveCategory(ext, mimeType),
       createdAt: new Date().toISOString(),
@@ -396,6 +400,33 @@ router.post('/', verifyAuthToken, async (req, res) => {
     }
 
     clearServerCache(`server_files_${classId}`);
+
+    // Dual-layer event: course stream card + per-student notifications
+    const storedLectureTitle = fileDoc.lectureTitle || fileDoc.title || cleanOriginalName;
+    const teacherName = fileDoc.uploadedByName || 'Teacher';
+    const className = access.classroomData ? (access.classroomData.classroomName || 'Classroom') : 'Classroom';
+    try {
+      await emitTeacherEvent(classId, access.classroomData || { classroomName: className }, {
+        type: 'file',
+        title: `New Material: ${storedLectureTitle}`,
+        message: `${teacherName} uploaded ${storedLectureTitle} in ${className}`,
+        teacherName,
+        teacherId: user.uid,
+        itemId: fileId,
+        itemType: fileDoc.fileType,
+        link: `/classroom/${classId}`,
+        metadata: {
+          lectureTitle: storedLectureTitle,
+          originalName: cleanOriginalName,
+          category: fileDoc.category,
+          fileType: fileDoc.fileType,
+          fileSize: size,
+        },
+      });
+    } catch (err) {
+      console.warn('[Files Route] Stream/notification emit failed (non-blocking):', err.message || err);
+    }
+
     return res.status(201).json({ id: fileId, ...fileDoc });
   } catch (error) {
     if (isQuotaExceededError(error)) {
@@ -412,7 +443,7 @@ router.put('/:fileId', verifyAuthToken, async (req, res) => {
   try {
     const classId = req.params.classId || req.params.id;
     const { fileId } = req.params;
-    const { title, description, category } = req.body;
+    const { title, description, category, lectureTitle } = req.body;
     const user = req.user;
     const db = getFirestore();
 
@@ -424,7 +455,8 @@ router.put('/:fileId', verifyAuthToken, async (req, res) => {
     }
 
     const updates = {
-      ...(title ? { title: title.trim() } : {}),
+      ...(lectureTitle ? { lectureTitle: lectureTitle.trim(), title: lectureTitle.trim() } : {}),
+      ...(title && !lectureTitle ? { title: title.trim() } : {}),
       ...(description !== undefined ? { description: description.trim() } : {}),
       ...(category ? { category: category.trim() } : {}),
       updatedAt: new Date().toISOString(),

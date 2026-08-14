@@ -149,6 +149,7 @@ function toSerializable(doc) {
 }
 
 import { safeServerQuery, isQuotaExceededError } from '../utils/quotaGuard.js';
+import { emitTeacherEvent } from '../utils/classroomEvents.js';
 
 // GET /api/classrooms/:classId/classwork - List class work (role aware)
 router.get('/', verifyAuthToken, async (req, res) => {
@@ -267,6 +268,29 @@ router.post('/', verifyAuthToken, async (req, res) => {
       userName: workData.teacherName,
       timestamp: now,
     });
+
+    // Dual-layer event: course stream card + per-student notifications
+    const eventType = workType === 'quiz' ? 'quiz' : workType === 'assignment' ? 'assignment' : workType;
+    const className = access.classroomData ? (access.classroomData.classroomName || 'Classroom') : 'Classroom';
+    try {
+      await emitTeacherEvent(classId, access.classroomData || { classroomName: className }, {
+        type: eventType,
+        title: `New ${eventType === 'assignment' ? 'Assignment' : 'Quiz'}: ${cleanTitle}`,
+        message: `${workData.teacherName} posted a new ${eventType === 'assignment' ? 'assignment' : 'quiz'} "${cleanTitle}" in ${className}`,
+        teacherName: workData.teacherName,
+        teacherId: user.uid,
+        itemId: docRef.id,
+        itemType: workType,
+        link: `/classroom/${classId}`,
+        metadata: {
+          dueDate: workData.dueDate || null,
+          points: workData.points || 0,
+          published: isPublished,
+        },
+      });
+    } catch (err) {
+      console.warn('[Classwork Route] Stream/notification emit failed (non-blocking):', err.message || err);
+    }
 
     return res.status(201).json({ id: docRef.id, ...workData });
   } catch (error) {

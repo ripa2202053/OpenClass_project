@@ -293,6 +293,10 @@
             <i class="material-icons-outlined">insights</i>
             <span>Analytics</span>
           </button>
+          <button class="nav-item" data-tab="my-grades">
+            <i class="material-icons-outlined">grade</i>
+            <span>My Grades</span>
+          </button>
           <button class="nav-item" data-tab="approvals">
             <i class="material-icons-outlined">verified_user</i>
             <span>Approvals</span>
@@ -739,6 +743,42 @@
         </div>
       </section>
 
+      <!-- ══════════════════ TAB: MY GRADES ══════════════════ -->
+      <section id="tab-my-grades" class="tab-content">
+        <div class="page-header animate-slide">
+          <div>
+            <h1>My Grades</h1>
+            <p>Your performance and grades across all enrolled classrooms.</p>
+          </div>
+          <div style="display:flex; gap:16px;">
+            <button id="btn-refresh-my-grades" class="btn btn-outline" onclick="window.renderMyGrades && window.renderMyGrades()"><i class="material-icons" style="font-size:18px; vertical-align:-3px;">refresh</i> Refresh</button>
+          </div>
+        </div>
+
+        <div id="my-grades-overview" class="stats-grid" style="grid-template-columns:repeat(4,1fr); margin:20px 0 28px 0;">
+          <div class="stat-card">
+            <div class="stat-header"><div class="stat-icon stat-c-blue"><i class="material-icons">stars</i></div><span class="stat-title">Average Grade</span></div>
+            <span class="stat-value" id="mg-avg-grade">--</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-header"><div class="stat-icon stat-c-green"><i class="material-icons">task_alt</i></div><span class="stat-title">Tasks Completed</span></div>
+            <span class="stat-value" id="mg-tasks">--</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-header"><div class="stat-icon stat-c-orange"><i class="material-icons">quiz</i></div><span class="stat-title">Quiz Average</span></div>
+            <span class="stat-value" id="mg-quiz-avg">--</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-header"><div class="stat-icon stat-c-purple"><i class="material-icons">fact_check</i></div><span class="stat-title">Attendance</span></div>
+            <span class="stat-value" id="mg-attendance">--</span>
+          </div>
+        </div>
+
+        <div id="my-grades-grid" class="class-grid animate-fade delay-100">
+          <div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);grid-column:1/-1;">Loading your grades...</div>
+        </div>
+      </section>
+
       <!-- ══════════════════ TAB: NOTICE BOARD ══════════════════ -->
       <section id="tab-notice-board" class="tab-content">
         <div class="page-header animate-slide">
@@ -789,7 +829,7 @@
               <div class="messenger-main-header">
                 <div class="messenger-header-user">
                   <div style="position:relative;">
-                    <img id="messenger-header-avatar" class="messenger-header-avatar" src="https://via.placeholder.com/40" alt="Avatar" />
+                    <img id="messenger-header-avatar" class="messenger-header-avatar" src="/default-avatar.png" alt="Avatar" />
                     <span id="messenger-header-presence" class="presence-dot"></span>
                   </div>
                   <div class="messenger-header-details">
@@ -1529,12 +1569,17 @@
     <form id="form-classroom-file-upload" class="modal-body">
       <div id="classroom-file-upload-alert" class="alert" style="display:none;"></div>
       <div class="form-group">
+        <label>Lecture Number / Topic <span style="color:var(--danger);">*</span></label>
+        <input type="text" id="upload-lecture-title" placeholder="e.g. Lecture 01: Introduction to Cloud" required class="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm" style="width:100%; box-sizing:border-box;" />
+        <small style="color:var(--text-muted); font-size:11px; display:block; margin-top:4px;">This will be shown as the prominent title of the file in the resources table.</small>
+      </div>
+      <div class="form-group">
         <label>Select File (Max 50MB) *</label>
         <input type="file" id="classroom-file-input" class="form-control" required accept=".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.txt,.jpg,.jpeg,.png,.webp,.zip" />
         <small style="color:var(--text-muted); font-size:11px; display:block; margin-top:4px;">Supported: PDF, PPT/X, DOC/X, XLS/X, TXT, JPG, PNG, WEBP, ZIP</small>
       </div>
       <div class="form-group">
-        <label>Title (Optional)</label>
+        <label>Display Title (Optional)</label>
         <input type="text" id="classroom-file-title" class="form-control" placeholder="e.g. Chapter 5 Lecture Slides" />
       </div>
       <div class="form-group">
@@ -1564,6 +1609,46 @@
       <div class="modal-footer" style="margin: 24px -24px -24px -24px;">
         <button type="button" class="btn btn-outline" data-close="modal-classroom-file-upload">Cancel</button>
         <button type="submit" id="btn-submit-file-upload" class="btn btn-primary"><i class="material-icons">cloud_upload</i> Upload</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ EDIT CLASSROOM FILE MODAL ═══════════════════════════ -->
+<div id="modal-classroom-file-edit" class="modal-overlay" style="display:none; z-index:1000000;" onclick="if(event.target.id==='modal-classroom-file-edit') this.style.display='none'">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-header">
+      <h2>Edit File / Lecture Title</h2>
+      <button class="icon-btn" data-close="modal-classroom-file-edit"><i class="material-icons">close</i></button>
+    </div>
+    <form id="form-classroom-file-edit" class="modal-body">
+      <div id="classroom-file-edit-alert" class="alert" style="display:none;"></div>
+      <div class="form-group">
+        <label>Lecture Number / Topic <span style="color:var(--danger);">*</span></label>
+        <input type="text" id="edit-lecture-title" required placeholder="e.g. Lecture 01: Introduction to Cloud" class="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-sm" style="width:100%; box-sizing:border-box;" />
+      </div>
+      <div class="form-group">
+        <label>Display Title (Optional)</label>
+        <input type="text" id="edit-file-title" class="form-control" placeholder="e.g. Chapter 5 Lecture Slides" />
+      </div>
+      <div class="form-group">
+        <label>Description (Optional)</label>
+        <textarea id="edit-file-desc" class="form-control" rows="2" placeholder="Short description of this file..."></textarea>
+      </div>
+      <div class="form-group">
+        <label>Category</label>
+        <select id="edit-file-category" class="form-control">
+          <option value="PDF">PDF Document</option>
+          <option value="Slides">Lecture Slides (PPT/X)</option>
+          <option value="Documents">Course Document (DOC/X, XLS/X, TXT)</option>
+          <option value="Images">Image (JPG, PNG, WEBP)</option>
+          <option value="ZIP">ZIP Archive</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+      <div class="modal-footer" style="margin: 24px -24px -24px -24px;">
+        <button type="button" class="btn btn-outline" data-close="modal-classroom-file-edit">Cancel</button>
+        <button type="submit" id="btn-submit-file-edit" class="btn btn-primary"><i class="material-icons">save</i> Save Changes</button>
       </div>
     </form>
   </div>
@@ -1641,6 +1726,30 @@
   </div>
 </div>
 
+<!-- Edit Announcement Modal (teacher stream management) -->
+<div id="modal-edit-notice" class="modal-overlay" style="display:none; z-index:1000000;" onclick="if(event.target.id==='modal-edit-notice') this.style.display='none'">
+  <div class="modal" style="max-width:600px; width:95%;">
+    <div class="modal-header">
+      <h3 style="margin:0;"><i class="material-icons" style="vertical-align:middle;color:var(--primary);">edit</i> Edit Announcement</h3>
+      <button class="btn btn-icon" data-close="modal-edit-notice" style="background:none;border:none;color:var(--text-muted);cursor:pointer;"><i class="material-icons">close</i></button>
+    </div>
+    <input type="hidden" id="edit-notice-id" value="" />
+    <div class="form-group" style="margin-bottom:12px;">
+      <label for="edit-notice-title">Title</label>
+      <input type="text" id="edit-notice-title" placeholder="e.g. Welcome to the course" />
+    </div>
+    <div class="form-group" style="margin-bottom:16px;">
+      <label for="edit-notice-content">Content *</label>
+      <textarea id="edit-notice-content" rows="6" placeholder="Announcement text..." style="min-height:140px;"></textarea>
+      <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">Formatting: **bold**, _italic_, ~~strikethrough~~, [link text](https://...)</div>
+    </div>
+    <div style="display:flex; justify-content:flex-end; gap:12px;">
+      <button type="button" class="btn btn-outline" data-close="modal-edit-notice">Cancel</button>
+      <button type="button" class="btn btn-primary" id="btn-edit-notice-save"><i class="material-icons" style="font-size:16px;">save</i> Save Changes</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════════════════════ GOOGLE CLASSROOM FULLSCREEN VIEW MODAL ═══════════════════════════ -->
 <div id="modal-classroom-detail" class="modal-overlay gc-fullscreen-overlay" style="display:none">
   <div class="modal modal-xl gc-fullscreen-modal" style="display:flex; flex-direction:row !important; width:100vw; height:100vh; overflow:hidden;">
@@ -1657,7 +1766,7 @@
           <button class="detail-tab active" data-detail-tab="stream"><i class="material-icons">stream</i> <span>Stream</span></button>
           <button class="detail-tab" data-detail-tab="stats"><i class="material-icons">assignment</i> <span>Classwork</span></button>
           <button class="detail-tab" data-detail-tab="members"><i class="material-icons">people</i> <span>People</span></button>
-          <button class="detail-tab" data-detail-tab="files" id="detail-tab-files"><i class="material-icons">folder</i> <span>Files & Resources</span></button>
+          <button class="detail-tab" data-detail-tab="files" id="detail-tab-files"><i class="material-icons">folder</i> <span>Files &amp; Resources</span></button>
           <button class="detail-tab" data-detail-tab="meetings"><i class="material-icons">videocam</i> <span>Meetings</span></button>
           <button class="detail-tab" data-detail-tab="attendance" id="detail-tab-attendance"><i class="material-icons">fact_check</i> <span>Attendance</span></button>
           <button class="detail-tab" data-detail-tab="grades" id="detail-tab-grades" style="display:none;"><i class="material-icons">grade</i> <span>My Grades</span></button>
@@ -1690,7 +1799,7 @@
       </div>
 
       <!-- Hero Banner Header for Class -->
-      <div class="gc-hero-banner" id="detail-hero-banner" style="background-size:cover; background-position:center; position:relative; min-height:180px; border-radius:16px; margin:20px 28px 0 28px; padding:28px; display:flex; flex-direction:column; justify-content:flex-end; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.25);">
+      <div class="gc-hero-banner w-full relative rounded-2xl p-6 bg-gradient-to-r from-blue-900/80 to-indigo-900/80 border border-slate-800 mb-6 shrink-0" id="detail-hero-banner" style="background-size:cover; background-position:center; position:relative; min-height:180px; border-radius:16px; margin:0 0 24px 0; padding:28px; display:flex; flex-direction:column; justify-content:flex-end; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.25);">
         <div class="gc-hero-overlay" style="position:absolute; inset:0; background:linear-gradient(180deg, rgba(0,0,0,0.3) 0%, rgba(0,0,0,0.75) 100%); z-index:1;"></div>
         <div class="gc-hero-content" style="position:relative; z-index:2; display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:16px;">
           <div>
@@ -1707,13 +1816,13 @@
         </div>
       </div>
 
-      <div class="gc-tab-content-container" style="padding: 24px 32px;">
+      <div class="gc-tab-content-container" style="flex:1; width:100%; min-width:0; padding:24px; overflow-x:auto;">
         
         <!-- STREAM TAB (Announcements & Activity Feed) -->
         <div class="detail-panel active" id="detail-panel-stream">
-          <div class="gc-stream-grid" style="display:grid; grid-template-columns: 240px 1fr; gap:24px;">
-            <!-- Left Sidebar: Class Code Box & Upcoming -->
-            <div class="gc-stream-sidebar">
+          <div class="w-full grid grid-cols-1 lg:grid-cols-4 gap-6 gc-stream-grid">
+            <!-- Left Sidebar Column: Class Code Box & Upcoming -->
+            <div class="gc-stream-sidebar col-span-1 space-y-4">
               <div class="gc-sidebar-card" style="background:var(--card-bg); border:1px solid var(--border); border-radius:12px; padding:16px;">
                 <div style="font-weight:700; font-size:14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
                   <span>Class code</span>
@@ -1722,34 +1831,69 @@
                 <div id="stream-code-display" style="font-family:monospace; font-weight:700; font-size:20px; color:var(--primary); letter-spacing:2px;">--</div>
               </div>
 
-              <div class="gc-sidebar-card" style="margin-top:16px; background:var(--card-bg); border:1px solid var(--border); border-radius:12px; padding:16px;">
+              <div class="gc-sidebar-card" style="background:var(--card-bg); border:1px solid var(--border); border-radius:12px; padding:16px;">
                 <div style="font-weight:700; font-size:14px; margin-bottom:8px;">Upcoming</div>
                 <p style="font-size:13px; color:var(--text-muted); margin:0;">Woohoo, no work due soon!</p>
               </div>
             </div>
 
-            <!-- Right Main Stream: Post Announcement Box & Activity Stream -->
-            <div class="gc-stream-main">
-              <!-- Announce to Class Input Box -->
-              <div class="gc-announce-box" id="gc-announce-box" style="background:var(--card-bg); border:1px solid var(--border); border-radius:12px; padding:20px; box-shadow:var(--shadow-soft);">
-                <div class="gc-announce-header" style="display:flex; align-items:center; gap:14px;">
-                  <div id="announce-user-avatar" class="gc-user-avatar-sm" style="width:40px; height:40px; border-radius:50%; background-size:cover; background-color:var(--primary); display:flex; align-items:center; justify-content:center; color:white; font-weight:700; flex-shrink:0;"></div>
-                  <input type="text" id="announce-input-text" class="gc-announce-input" placeholder="Announce something to your class..." style="flex:1; background:var(--bg-color); border:1px solid var(--border); border-radius:24px; padding:10px 20px; font-size:14px; color:var(--text-main); outline:none;" />
-                </div>
-                <div id="announce-actions-row" class="gc-announce-actions" style="display:none; margin-top:16px; justify-content:flex-end; gap:12px;">
-                  <button type="button" id="btn-cancel-announce" class="btn btn-outline" style="padding:6px 16px; font-size:13px;">Cancel</button>
-                  <button type="button" id="btn-post-announce" class="btn btn-primary" style="padding:6px 16px; font-size:13px;"><i class="material-icons" style="font-size:16px;">send</i> Post</button>
+            <!-- Right Main Stream Column: Announcement Box, Feed & Activity Timeline -->
+            <div class="gc-stream-main col-span-3 space-y-6">
+              <!-- Announce to Class Composer (teacher-only; hidden for students in JS) -->
+              <div id="gc-announce-box" class="w-full bg-[#131b2e] border border-slate-800 rounded-2xl p-4 mb-6 shadow-md">
+                <div class="flex items-start gap-3">
+                  <div class="w-10 h-10 rounded-full overflow-hidden border border-slate-700 shrink-0" id="announce-user-avatar">
+                    <div class="w-full h-full bg-blue-600 flex items-center justify-center font-bold text-white text-xs">RK</div>
+                  </div>
+                  <div class="flex-1 flex flex-col gap-3">
+                    <textarea 
+                      id="gc-announce-textarea" 
+                      rows="2" 
+                      placeholder="Announce something to your class..." 
+                      class="w-full bg-[#0b0f19] text-slate-200 placeholder-slate-500 rounded-xl px-4 py-3 border border-slate-800 focus:outline-none focus:border-blue-500 transition text-sm resize-none"
+                    ></textarea>
+                    <div class="flex justify-end">
+                      <button 
+                        id="gc-post-announce-btn" 
+                        type="button" 
+                        class="px-5 py-2 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-medium text-xs rounded-xl shadow transition"
+                      >
+                        Post
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <!-- Class Posts / Announcements Feed -->
-              <div id="detail-posts-list" style="display:flex; flex-direction:column; gap:16px; margin-top:20px;">
-                <div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);font-size:14px;">No posts yet. Announce something to your class!</div>
+              <!-- Announcements Feed -->
+              <div id="gc-announcements-feed" class="space-y-4 w-full">
+                <div id="detail-posts-list" style="display:flex; flex-direction:column; gap:16px;">
+                  <div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);font-size:14px;">No posts yet. Announce something to your class!</div>
+                </div>
               </div>
 
-              <!-- Stream Notices & Feed -->
-              <div class="timeline" id="detail-activity-list" style="gap:16px; margin-top:20px;">
-                <div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No announcements yet.</div>
+              <!-- Class Activity Timeline (placed underneath announcements feed, NOT floating on side) -->
+              <div id="gc-activity-feed" class="w-full">
+                <div id="detail-activity-section" style="display:none;">
+                  <div style="display:flex; align-items:center; gap:8px; margin:16px 0 4px 0;">
+                    <span style="font-weight:700; font-size:14px; color:var(--text-main);">Class Activity</span>
+                    <span style="font-size:12px; color:var(--text-muted);">Enrollment &amp; class updates</span>
+                  </div>
+                  <div id="detail-activity-list" class="timeline" style="margin-top:12px;">
+                    <div class="empty-state-sm" style="text-align:center;padding:24px 0;color:var(--text-muted);font-size:14px;">No activity yet.</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Course Stream Feed -->
+              <div class="w-full">
+                <div style="display:flex; align-items:center; gap:8px; margin:16px 0 4px 0;">
+                  <span style="font-weight:700; font-size:14px; color:var(--text-main);">Course Activity</span>
+                  <span style="font-size:12px; color:var(--text-muted);">New materials, assignments, quizzes &amp; live classes</span>
+                </div>
+                <div id="detail-stream-feed" style="display:flex; flex-direction:column; gap:14px; margin-top:12px;">
+                  <div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No course activity yet.</div>
+                </div>
               </div>
             </div>
           </div>
@@ -1823,7 +1967,7 @@
         <div class="detail-panel" id="detail-panel-files" style="display:none;">
 
           <!-- Single-Row Toolbar (Search, Filters, Action Button) -->
-          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px; margin-bottom:24px; background:#0f172a; border:1px solid #1e293b; border-radius:16px; padding:14px 18px; box-shadow:0 4px 16px rgba(0,0,0,0.2);">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px; margin-bottom:24px; background:#0f172a; border:1px solid #1e293b; border-radius:16px; padding:14px 18px; box-shadow:0 4px 16px rgba(0,0,0,0.2); width:100%; box-sizing:border-box;">
             <div style="display:flex; gap:12px; align-items:center; flex:1; min-width:300px; flex-wrap:wrap;">
               <!-- Search Input -->
               <div style="position:relative; flex:1; min-width:220px;">
@@ -1859,9 +2003,9 @@
             </button>
           </div>
 
-          <!-- 3-Column Files Grid -->
-          <div id="classroom-files-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:20px;">
-            <div class="empty-state-sm" style="text-align:center; padding:60px 0; color:var(--text-muted); grid-column:1/-1;"><i class="material-icons rotating" style="font-size:32px; display:block; margin-bottom:8px;">sync</i> Loading files & resources...</div>
+          <!-- Full-Width Files Table Container -->
+          <div id="classroom-files-grid" style="width:100%; min-width:0;">
+            <div class="empty-state-sm" style="text-align:center; padding:60px 0; color:var(--text-muted);"><i class="material-icons rotating" style="font-size:32px; display:block; margin-bottom:8px;">sync</i> Loading files & resources...</div>
           </div>
         </div>
 
@@ -2298,7 +2442,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const FUNCTIONAL_TABS = { 
       dashboard: 'tab-dashboard', classrooms: 'tab-classrooms', chat: 'tab-chat', 
       profile: 'tab-profile', notes: 'tab-notes', assignments: 'tab-assignments', quiz: 'tab-quiz',
-      'notice-board': 'tab-notice-board', meetings: 'tab-meetings', attendance: 'tab-attendance', calendar: 'tab-calendar', notifications: 'tab-notifications', analytics: 'tab-analytics', approvals: 'tab-approvals',
+      'notice-board': 'tab-notice-board', meetings: 'tab-meetings', attendance: 'tab-attendance', calendar: 'tab-calendar', notifications: 'tab-notifications', analytics: 'tab-analytics', 'my-grades': 'tab-my-grades', approvals: 'tab-approvals',
       'kanban-tracker': 'tab-kanban-tracker', resources: 'tab-resources', 'ai-assistant': 'tab-ai-assistant'
     };
 

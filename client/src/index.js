@@ -22,6 +22,7 @@ import {
   limit,
   onSnapshot,
   getDocs,
+  getDoc,
   setDoc,
   updateDoc,
   doc,
@@ -51,12 +52,13 @@ import {
   updateClassroom, archiveClassroom, deleteClassroomPermanent, leaveClassroom, getClassroom,
   approveMember, rejectMember, removeMember,
   subscribeToClassroomMembers, subscribeToJoinRequests, subscribeToClassroomRequests,
-  subscribeToClassroomStats, subscribeToClassroomActivity,
+  subscribeToClassroomStats, subscribeToClassroomActivity, subscribeToClassroomFiles,
+  subscribeToClassroomStream,
   addActivity as addClassroomActivity,
   getThemeGradient, CLASSROOM_THEMES
 } from './classroomService.js';
 
-import { subscribeDashboardData, unsubscribeAll, addActivity, addNotice, subscribeNotices } from './dashboardService.js';
+import { subscribeDashboardData, unsubscribeAll, addActivity, addNotice, subscribeNotices, updateNotice, deleteNotice } from './dashboardService.js';
 import {
   calculateGamification, getBookmarkedResourceIds, toggleBookmarkResource,
   summarizeTextAI, generateQuizAI
@@ -66,6 +68,26 @@ import {
   updateMeetingStatus, recordMeetingJoin, exportAttendanceCSV
 } from './meetingService.js';
 import { openInAppMeeting as mountMeetingUi, closeInAppMeeting, isMeetingOpen } from './meeting/index.jsx';
+
+import {
+  createAssignment, updateAssignment, deleteAssignment,
+  publishAssignment, closeAssignment,
+  subscribeAssignments, submitAssignment, gradeAssignment,
+  subscribeSubmissions, subscribeMySubmission, uploadFile
+} from './assignmentService.js';
+import {
+  createQuiz, updateQuiz, deleteQuiz, publishQuiz, closeQuiz,
+  subscribeQuizzes, submitQuizAttempt,
+  subscribeMyAttempt, subscribeLeaderboard, subscribeQuizAnalytics,
+  subscribeAttemptHistory,
+  saveToQuestionBank, subscribeQuestionBank, deleteFromQuestionBank,
+  QTYPE
+} from './quizService.js';
+import { uploadNote, deleteNote, subscribeNotes, getCategories, searchNotes } from './noteService.js';
+import { autoAttend, markAttendance, markAllPresent, subscribeAttendance, subscribeStudentHistory, getTodayStats, getMonthRange, exportCSV, getMembers } from './attendanceService.js';
+import { subscribeReminders, createReminder, deleteReminder, fetchCalendarEvents } from './calendarService.js';
+import { getClassroomAnalytics, getStudentPerformance, exportToCSV, downloadCSV, printElement } from './analyticsService.js';
+import { createNotification, createBulkNotifications, subscribeNotifications, markAsRead, markAllAsRead, deleteNotification, setupFCM, onForegroundMessage, subscribeUserNotifications, markUserNotificationRead, markAllUserNotificationsRead, deleteUserNotification } from './notificationService.js';
 import {
   subscribeToChannels, createChannel, sendMessage, sendImageMessage,
   subscribeToMessages, setTyping, subscribeToTyping, markChannelAsRead,
@@ -106,6 +128,8 @@ let globalAttendanceUnsubs = [];
 let studentHistoryUnsub = null;
 let remindersUnsub = null;
 let notificationsUnsub = null;
+let notificationsTopUnsub = null;
+let notificationsSubUnsub = null;
 let userStatusUnsub = null;
 let requestsUnsub = null;
 let teacherMeetingsUnsub = null;
@@ -113,6 +137,7 @@ let detailStatsUnsub = null;
 let detailMembersUnsub = null;
 let detailRequestsUnsub = null;
 let detailActivityUnsub = null;
+let detailStreamUnsub = null;
 let detailNoticesUnsub = null;
 let calendarEventsCache = [];
 let selectedCalendarDay = null;
@@ -121,6 +146,15 @@ let currentChannelId = null;
 let typingTimeout = null;
 let roleSelectionResolve = null;
 let selectedFirstLoginRole = null;
+let activeMeetingDataList = [];
+let detailCurrentClassroomId = null;
+let detailCurrentClassroomCreatedBy = null;
+let detailFilesUnsub = null;
+let classroomFilesCache = [];
+let classroomMembersCache = [];
+let filesTableState = { page: 1, perPage: 12, search: '', category: 'all', sort: 'newest' };
+let editingClassroomFileId = null;
+let editingClassroomFileClassroomId = null;
 
 // Calendar + classroom state (module-global so renderCalendar / loadCalendarEvents
 // and every event handler can safely read/mutate them without TDZ or ReferenceErrors)
@@ -694,6 +728,20 @@ function applyRoleBasedUI(profile) {
   const approvalsTab = document.querySelector('.nav-item[data-tab="approvals"]');
   if (approvalsTab) {
     approvalsTab.style.display = isUserTeacher ? '' : 'none';
+  }
+
+  // "My Grades" is a student-only view: hide the sidebar item and its panel for
+  // teachers so they never see the individual student grade report.
+  const myGradesTab = document.querySelector('.nav-item[data-tab="my-grades"]');
+  const myGradesSection = document.getElementById('tab-my-grades');
+  if (isUserTeacher) {
+    if (myGradesTab) myGradesTab.style.display = 'none';
+    if (myGradesSection) {
+      myGradesSection.style.display = 'none';
+      myGradesSection.classList.remove('active-tab');
+    }
+  } else if (myGradesTab) {
+    myGradesTab.style.display = '';
   }
 
   // Label customization for Student vs Teacher sidebar
@@ -2095,7 +2143,14 @@ var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
 
     const teacherName = c.teacherName || 'Teacher';
     const teacherInitials = teacherName.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
-    const teacherPhoto = sanitizeProfilePhotoUrl(c.teacherPhotoURL || (isCreator && currentUserProfile?.photoURL) || '', c);
+    const teacherPhoto = sanitizeProfilePhotoUrl(
+      c.teacherPhotoURL ||
+      c.instructorAvatar ||
+      (c.teacher && c.teacher.photoURL) ||
+      (isCreator && currentUserProfile?.photoURL) ||
+      '',
+      c
+    );
     const cardSubtitle = c.courseCode || c.section || c.subject || '';
 
     const bgStyle = c.coverImageUrl
@@ -2134,8 +2189,8 @@ var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
         </div>
 
         <div class="gc-card-avatar-wrapper">
-          ${teacherPhoto 
-            ? `<img src="${teacherPhoto}" alt="${teacherName}" class="gc-card-avatar-img" />` 
+          ${teacherPhoto
+            ? `<img src="${String(teacherPhoto).replace(/"/g, '&quot;')}" alt="${teacherName}" class="gc-card-avatar-img" onerror="this.style.display='none';const n=this.nextElementSibling;if(n){n.classList.remove('hidden');}" /><div class="hidden gc-card-avatar-fallback">${teacherInitials}</div>`
             : `<div class="gc-card-avatar-fallback">${teacherInitials}</div>`}
         </div>
       </div>
@@ -2167,6 +2222,7 @@ var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
     }
 
     listEl.appendChild(card);
+    resolveClassroomTeacherPhoto(c);
   });
 
   document.addEventListener('click', () => {
@@ -2191,6 +2247,7 @@ var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
       if (!confirm(`Are you sure you want to ${verb} this classroom?`)) return;
       try {
         await archiveClassroom(cId, currentUserProfile);
+        refreshClassroomsList();
       } catch (err) {
         alert(err.message);
       }
@@ -2204,6 +2261,7 @@ var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
       if (!confirm('Are you sure you want to permanently delete this classroom? This action cannot be undone.')) return;
       try {
         await deleteClassroomPermanent(cId, currentUserProfile);
+        refreshClassroomsList();
       } catch (err) {
         alert(err.message);
       }
@@ -2217,6 +2275,7 @@ var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
       if (!confirm('Are you sure you want to leave this classroom?')) return;
       try {
         await leaveClassroom(cId, currentUserProfile);
+        refreshClassroomsList();
       } catch (err) {
         alert(err.message);
       }
@@ -2289,6 +2348,16 @@ var renderClassrooms = function renderClassroomsBase(classrooms, errorMsg) {
       }
     });
   });
+
+  // Keep the My Grades tab in sync with fresh classroom data (realtime).
+  try {
+    if (typeof renderMyGrades === 'function') {
+      const gradesTab = document.getElementById('tab-my-grades');
+      if (gradesTab && gradesTab.style.display !== 'none') {
+        renderMyGrades();
+      }
+    }
+  } catch (e) { console.warn('My Grades refresh error:', e); }
   } catch (err) {
     console.error('renderClassrooms error:', err);
     listEl.innerHTML = `
@@ -2308,6 +2377,107 @@ window.renderClassroomsRetry = () => {
   if (classroomsUnsubscribe) classroomsUnsubscribe();
   classroomsUnsubscribe = subscribeToUserClassrooms(currentUserProfile.uid, currentUserProfile.role || '', renderClassrooms);
 };
+
+// ═══════════════════ MY GRADES TAB ═══════════════════
+// Student-facing overview of grades & performance across enrolled classrooms.
+function renderMyGrades() {
+  // Access control: this is a student-only view. Teachers never render it.
+  if (currentUserProfile && isTeacher(currentUserProfile)) return;
+  const grid = document.getElementById('my-grades-grid');
+  if (!grid) return;
+
+  const classrooms = Array.isArray(userClassrooms)
+    ? userClassrooms.filter(c => c && !c.isArchived && c.joinStatus !== 'pending')
+    : [];
+
+  const setVal = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v;
+  };
+  const gradePercent = (g) => {
+    const m = String(g || '').match(/(\d+)%/);
+    return m ? Number(m[1]) : null;
+  };
+  const attendancePct = (a) => {
+    const m = String(a || '').match(/(\d+)%/);
+    return m ? Number(m[1]) : null;
+  };
+
+  const gradePcts = classrooms.map(c => gradePercent(c.studentGrade)).filter(v => v !== null);
+  const attPcts = classrooms.map(c => attendancePct(c.studentAttendance)).filter(v => v !== null);
+  const tasksDone = classrooms.reduce((s, c) => s + Math.round(((c.progress || 0) / 100) * 5), 0);
+
+  setVal('mg-avg-grade', gradePcts.length ? `${Math.round(gradePcts.reduce((a, b) => a + b, 0) / gradePcts.length)}%` : '--');
+  setVal('mg-tasks', classrooms.length ? `${tasksDone}/${classrooms.length * 5}` : '--');
+  setVal('mg-quiz-avg', '--');
+  setVal('mg-attendance', attPcts.length ? `${Math.round(attPcts.reduce((a, b) => a + b, 0) / attPcts.length)}%` : '--');
+
+  if (classrooms.length === 0) {
+    grid.innerHTML = `
+      <div class="empty-state-sm" style="text-align:center;padding:60px 20px;color:var(--text-muted);grid-column:1/-1;">
+        <div style="width:64px;height:64px;border-radius:50%;background:rgba(139,92,246,0.12);color:var(--primary);display:flex;align-items:center;justify-content:center;margin:0 auto 16px auto;">
+          <i class="material-icons" style="font-size:36px;">grade</i>
+        </div>
+        <h3 style="margin:0 0 6px 0;font-size:16px;color:var(--text-main);">No grades yet</h3>
+        <p style="font-size:13px;color:var(--text-muted);margin:0;">Join a classroom to start tracking your grades and progress here.</p>
+      </div>`;
+    return;
+  }
+
+  grid.innerHTML = '';
+  classrooms.forEach(c => {
+    const card = document.createElement('div');
+    card.className = 'activity-card animate-fade';
+    card.style.cssText = 'background:var(--card-bg);border:1px solid var(--border);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow-soft);cursor:pointer;transition:transform .2s, box-shadow .2s;';
+    card.onmouseenter = () => { card.style.transform = 'translateY(-3px)'; card.style.boxShadow = '0 10px 24px rgba(0,0,0,0.18)'; };
+    card.onmouseleave = () => { card.style.transform = 'none'; card.style.boxShadow = 'var(--shadow-soft)'; };
+
+    const subject = c.courseCode || c.section || c.subject || 'General';
+    const progress = Math.min(100, Math.max(0, Number(c.progress) || 0));
+    const grade = c.studentGrade || '--';
+    const attendance = c.studentAttendance || '--';
+    const teacher = c.teacherName || 'Teacher';
+
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+        <div style="min-width:0;">
+          <div style="font-weight:700;font-size:15px;color:var(--text-main);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${cwEsc(c.classroomName || 'Classroom')}</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${cwEsc(subject)}</div>
+        </div>
+        <div style="flex-shrink:0;padding:4px 12px;border-radius:20px;background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff;font-size:13px;font-weight:700;">${cwEsc(grade)}</div>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);">${cwEsc(teacher)}</div>
+      <div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:6px;">
+          <span>Course Progress</span><span style="font-weight:700;color:var(--primary);">${progress}%</span>
+        </div>
+        <div style="height:8px;border-radius:4px;background:var(--bg-color);border:1px solid var(--border);overflow:hidden;">
+          <div style="width:${progress}%;height:100%;background:linear-gradient(90deg,#3b82f6,#8b5cf6);border-radius:4px;transition:width .5s ease;"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <span class="badge-status bg-success-dim"><i class="material-icons" style="font-size:13px;vertical-align:-2px;">fact_check</i> ${cwEsc(attendance)} attendance</span>
+        <span class="badge-status bg-info-dim"><i class="material-icons" style="font-size:13px;vertical-align:-2px;">school</i> ${cwEsc(teacher)}</span>
+      </div>
+      <button class="btn btn-outline btn-open-grade-class" style="width:100%;padding:8px;font-size:13px;">
+        <i class="material-icons" style="font-size:16px;vertical-align:-3px;">open_in_new</i> View Classroom
+      </button>`;
+
+    card.querySelector('.btn-open-grade-class').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const found = (userClassrooms || []).find(x => x.classroomId === c.classroomId);
+      if (found) openClassroomDetail(found);
+    });
+
+    grid.appendChild(card);
+  });
+}
+window.renderMyGrades = renderMyGrades;
+
+// Re-render My Grades whenever the classrooms data refreshes (keeps it live).
+document.querySelector('.nav-item[data-tab="my-grades"]')?.addEventListener('click', () => {
+  setTimeout(renderMyGrades, 50);
+});
 
 const btnCreateClass = document.getElementById('btn-create-classroom');
 const btnJoinClass = document.getElementById('btn-join-classroom');
@@ -2545,6 +2715,7 @@ if (formJoinClass) {
       } else {
         showAppToast('Successfully joined the classroom.', 'success');
       }
+      refreshClassroomsList();
     } catch (err) {
       alertEl.className = 'alert error';
       alertEl.textContent = err.message;
@@ -2595,6 +2766,7 @@ if (formEditClass) {
       }, currentUserProfile);
       formEditClass.reset();
       document.getElementById('modal-edit-classroom').style.display = 'none';
+      refreshClassroomsList();
     } catch (err) {
       alertEl.className = 'alert error';
       alertEl.textContent = err.message;
@@ -2606,15 +2778,62 @@ if (formEditClass) {
   });
 }
 
-// ─── CLASSROOM DETAIL ──────────────────────────────────────────
+function setupAnnounceComposer(classroom, isTeacherParam) {
+  const composeContainer = document.getElementById('gc-announce-box');
+  if (!composeContainer) return;
 
-detailStatsUnsub = null;
-detailMembersUnsub = null;
-detailRequestsUnsub = null;
-detailActivityUnsub = null;
-detailNoticesUnsub = null;
-let detailCurrentClassroomId = null;
-let detailCurrentClassroomCreatedBy = null;
+  const isTeacherUser = typeof isTeacherParam === 'boolean'
+    ? isTeacherParam
+    : getEffectiveIsTeacher(isTeacherParam);
+
+  // If student, hide composer completely
+  if (!isTeacherUser) {
+    composeContainer.style.display = 'none';
+    return;
+  }
+
+  // If teacher, display and attach event listeners
+  composeContainer.style.display = 'block';
+
+  // Update Avatar
+  const avatarEl = document.getElementById('announce-user-avatar');
+  if (avatarEl) {
+    const u = currentUserProfile || window.currentUserProfile || window.currentUser || getAuth().currentUser || {};
+    if (u.photoURL) {
+      avatarEl.innerHTML = `<img src="${u.photoURL}" class="w-full h-full object-cover" alt="" />`;
+    } else {
+      const name = u.displayName || u.name || 'RK';
+      const initials = name.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase() || 'RK';
+      avatarEl.innerHTML = `<div class="w-full h-full bg-blue-600 flex items-center justify-center font-bold text-white text-xs">${initials}</div>`;
+    }
+  }
+
+  const postBtn = document.getElementById('gc-post-announce-btn') || document.getElementById('btn-post-announce');
+  const textarea = document.getElementById('gc-announce-textarea') || document.getElementById('announce-input-text');
+
+  if (postBtn && textarea) {
+    postBtn.onclick = async () => {
+      const text = textarea.value.trim();
+      if (!text) return;
+      const classId = typeof classroom === 'string'
+        ? classroom
+        : (classroom?.classroomId || classroom?.id || detailCurrentClassroomId);
+      if (!classId) return;
+
+      try {
+        postBtn.disabled = true;
+        await addNotice(classId, 'Announcement', text, currentUserProfile || getAuth().currentUser || {});
+        textarea.value = '';
+      } catch (err) {
+        console.error('Failed to post announcement:', err);
+      } finally {
+        postBtn.disabled = false;
+      }
+    };
+  }
+}
+
+window.setupAnnounceComposer = setupAnnounceComposer;
 
 function openClassroomDetail(classroom) {
   if (!classroom) return;
@@ -2659,22 +2878,12 @@ function openClassroomDetail(classroom) {
   }
 
   const teacherName = classroom.teacherName || 'Teacher';
-  const teacherInitials = teacherName.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
-  const isCreator = classroom.createdBy === getAuth().currentUser?.uid;
-  const teacherPhoto = sanitizeProfilePhotoUrl(classroom.teacherPhotoURL || (isCreator && currentUserProfile?.photoURL) || '', classroom);
 
   const heroTeacherName = document.getElementById('detail-hero-teacher-name');
   if (heroTeacherName) heroTeacherName.textContent = teacherName;
+
   const heroAvatar = document.getElementById('detail-hero-avatar');
-  if (heroAvatar) {
-    if (teacherPhoto) {
-      heroAvatar.style.backgroundImage = `url('${teacherPhoto}')`;
-      heroAvatar.textContent = '';
-    } else {
-      heroAvatar.style.backgroundImage = '';
-      heroAvatar.textContent = teacherInitials;
-    }
-  }
+  if (heroAvatar) heroAvatar.innerHTML = buildInstructorAvatarHtml(classroom, 38);
 
   // Sidebar User Info
   const sidebarUserName = document.getElementById('sidebar-user-name');
@@ -2693,19 +2902,12 @@ function openClassroomDetail(classroom) {
       sidebarUserAvatar.textContent = uInitials;
     }
   }
+  const filesBannerMeta = document.getElementById('files-banner-meta');
   if (filesBannerMeta) filesBannerMeta.textContent = `${classroom.courseCode || classroom.section || classroom.subject || 'Course'} • ${classroom.memberCount || 1} Members`;
   const filesBannerTeacher = document.getElementById('files-banner-instructor-name');
   if (filesBannerTeacher) filesBannerTeacher.textContent = teacherName;
   const filesBannerAvatar = document.getElementById('files-banner-instructor-avatar');
-  if (filesBannerAvatar) {
-    if (teacherPhoto) {
-      filesBannerAvatar.style.backgroundImage = `url('${teacherPhoto}')`;
-      filesBannerAvatar.textContent = '';
-    } else {
-      filesBannerAvatar.style.backgroundImage = '';
-      filesBannerAvatar.textContent = teacherInitials;
-    }
-  }
+  if (filesBannerAvatar) filesBannerAvatar.innerHTML = buildInstructorAvatarHtml(classroom, 28);
 
   // Current user avatar for announcement box
   const userAvatar = document.getElementById('announce-user-avatar');
@@ -2720,35 +2922,16 @@ function openClassroomDetail(classroom) {
     }
   }
 
-  // Setup announcement box input & post trigger
-  const announceInput = document.getElementById('announce-input-text');
-  const announceActions = document.getElementById('announce-actions-row');
-  const btnCancelAnnounce = document.getElementById('btn-cancel-announce');
-  const btnPostAnnounce = document.getElementById('btn-post-announce');
-  if (announceInput && announceActions) {
-    announceInput.onfocus = () => {
-      announceActions.style.display = 'flex';
-    };
-    if (btnCancelAnnounce) {
-      btnCancelAnnounce.onclick = () => {
-        announceInput.value = '';
-        announceActions.style.display = 'none';
-      };
-    }
-    if (btnPostAnnounce) {
-      btnPostAnnounce.onclick = async () => {
-        const content = announceInput.value.trim();
-        if (!content) return;
-        try {
-          await addNotice(classroom.classroomId, `Announcement by ${currentUserProfile?.displayName || 'Teacher'}`, content, currentUserProfile);
-          announceInput.value = '';
-          announceActions.style.display = 'none';
-        } catch (err) {
-          alert(err.message || 'Could not post announcement.');
-        }
-      };
-    }
-  }
+  // Setup announcement box input & post trigger (full teacher composer)
+  setupAnnounceComposer(classroom);
+
+  const isUserTeacher = currentUserProfile && isTeacher(currentUserProfile);
+
+  // Students: hide the creation composer entirely (read-only stream).
+  const announceBox = document.getElementById('gc-announce-box');
+  if (announceBox) announceBox.style.display = isUserTeacher ? 'block' : 'none';
+  const announceToolbar = document.getElementById('announce-toolbar');
+  if (announceToolbar) announceToolbar.style.display = isUserTeacher ? 'flex' : 'none';
 
   // Code copy buttons
   const copyBtn1 = document.getElementById('detail-classroom-code');
@@ -2790,8 +2973,6 @@ function openClassroomDetail(classroom) {
       : 'Unknown';
   }
 
-  const isUserTeacher = currentUserProfile && isTeacher(currentUserProfile);
-
   // Role-based element visibility (Hide class code & attendance tab for students)
   const codeChipHdr = document.getElementById('detail-classroom-code');
   if (codeChipHdr) codeChipHdr.style.display = isUserTeacher ? 'inline-flex' : 'none';
@@ -2806,7 +2987,7 @@ function openClassroomDetail(classroom) {
   if (attTab) attTab.style.display = isUserTeacher ? 'inline-flex' : 'none';
 
   const gradesTab = document.getElementById('detail-tab-grades');
-  if (gradesTab) gradesTab.style.display = 'inline-flex';
+  if (gradesTab) gradesTab.style.display = (currentUserProfile && isTeacher(currentUserProfile)) ? 'none' : 'inline-flex';
 
   // Populate Info Cards
   const progressVal = classroom.progress !== undefined ? classroom.progress : 65;
@@ -2929,7 +3110,106 @@ function openClassroomDetail(classroom) {
   subscribeDetailData(classId);
   fetchAndRenderClassroomFiles(classId);
   loadClassworkForCurrentClassroom();
+
+  // Ensure the instructor profile image is available for the hero banner and
+  // file/member rows: fetch the teacher's users doc when the classroom itself
+  // does not carry a photo URL, then refresh any already-rendered avatars.
+  fetchInstructorPhoto(classroom);
 }
+
+// Builds the instructor avatar markup for the hero banner / files banner.
+// Renders the photo <img> when available, otherwise (or on img error) an
+// inline initials badge. `size` is the pixel diameter (38 hero, 28 compact).
+function buildInstructorAvatarHtml(classroom, size = 38) {
+  const teacherName = classroom.teacherName || 'Teacher';
+  const teacherInitials = teacherName.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
+  const isCreator = classroom.createdBy === getAuth().currentUser?.uid;
+  const teacherPic = sanitizeProfilePhotoUrl(
+    classroom.teacherPhotoURL ||
+    classroom.instructorAvatar ||
+    (classroom.teacher && classroom.teacher.photoURL) ||
+    classroom.creatorAvatar ||
+    (isCreator && currentUserProfile?.photoURL) ||
+    '',
+    classroom
+  );
+  const sizeCss = `width:${size}px;height:${size}px;border-radius:50%;`;
+  const fontCss = size >= 38 ? 'font-size:14px;' : 'font-size:11px;';
+  if (teacherPic) {
+    return `<img src="${String(teacherPic).replace(/"/g, '&quot;')}" style="${sizeCss}object-fit:cover;border:2px solid rgba(51,65,85,0.8);box-shadow:0 2px 8px rgba(0,0,0,0.4);" alt="Instructor" onerror="this.style.display='none';const n=this.nextElementSibling;if(n){n.style.display='flex';}" /><span style="display:none;${sizeCss}background:var(--primary);align-items:center;justify-content:center;color:#fff;font-weight:700;${fontCss}">${teacherInitials}</span>`;
+  }
+  return `<span style="${sizeCss}background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;${fontCss}">${teacherInitials}</span>`;
+}
+
+// Looks up the teacher's users doc when the classroom object has no photo URL,
+// caches it on the classroom object, and refreshes banner + member avatars.
+function fetchInstructorPhoto(classroom) {
+  if (!classroom) return;
+  if (classroom.teacherPhotoURL || classroom.instructorAvatar || (classroom.teacher && classroom.teacher.photoURL)) return;
+  const teacherUid = classroom.teacherId || classroom.teacherUid || classroom.createdBy;
+  if (!teacherUid) return;
+
+  getDoc(doc(getFirestore(), 'users', teacherUid))
+    .then((teacherDoc) => {
+      if (!teacherDoc.exists()) return;
+      const photo = teacherDoc.data().photoURL;
+      if (!photo) return;
+      classroom.teacherPhotoURL = photo;
+      if (window._currentDetailClassroom) window._currentDetailClassroom.teacherPhotoURL = photo;
+
+      const heroAvatar = document.getElementById('detail-hero-avatar');
+      if (heroAvatar) heroAvatar.innerHTML = buildInstructorAvatarHtml(classroom, 38);
+      const filesBannerAvatar = document.getElementById('files-banner-instructor-avatar');
+      if (filesBannerAvatar) filesBannerAvatar.innerHTML = buildInstructorAvatarHtml(classroom, 28);
+
+      if (Array.isArray(classroomMembersCache) && classroomMembersCache.length > 0) {
+        const creatorUid = classroom.teacherId || classroom.teacherUid || classroom.createdBy;
+        classroomMembersCache = classroomMembersCache.map(m => (creatorUid && m.uid === creatorUid ? { ...m, photoURL: photo } : m));
+        renderClassroomMembers(classroomMembersCache, classroom.classroomId || classroom.id);
+      }
+    })
+    .catch((err) => console.warn('[Classroom] Failed to fetch instructor profile photo:', err && err.message));
+}
+
+// Resolves the teacher/instructor photo for classroom cards on My Courses /
+// Classrooms dashboard. Uses whatever is already on the classroom object
+// (teacherPhotoURL / instructorAvatar / teacher.photoURL); otherwise fetches the
+// creator's photoURL from the users collection, caches it on the classroom
+// object (so navigation back and forth never re-fetches or flickers), and swaps
+// the resolved <img> into the rendered card in place.
+function resolveClassroomTeacherPhoto(c) {
+  if (!c || typeof c !== 'object') return;
+  if (c.teacherPhotoURL || c.instructorAvatar || (c.teacher && c.teacher.photoURL)) return;
+  if (c._photoResolved || c._photoFetching) return;
+  const creatorUid = c.createdBy || c.teacherId || c.teacherUid;
+  if (!creatorUid) return;
+  c._photoFetching = true;
+
+  getDoc(doc(getFirestore(), 'users', creatorUid))
+    .then((creatorDoc) => {
+      c._photoFetching = false;
+      c._photoResolved = true;
+      if (!creatorDoc.exists()) return;
+      const photo = creatorDoc.data().photoURL;
+      if (!photo) return;
+
+      c.teacherPhotoURL = photo;
+      if (window._currentDetailClassroom && window._currentDetailClassroom.classroomId === c.classroomId) {
+        window._currentDetailClassroom.teacherPhotoURL = photo;
+      }
+
+      const card = document.querySelector(`.class-card[data-classroom-id="${c.classroomId}"], .gc-card[data-classroom-id="${c.classroomId}"]`);
+      const wrapper = card && card.querySelector('.gc-card-avatar-wrapper');
+      if (wrapper) {
+        const name = c.teacherName || 'Teacher';
+        const initials = name.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
+        const safePhoto = String(photo).replace(/"/g, '&quot;');
+        wrapper.innerHTML = `<img src="${safePhoto}" alt="${name}" class="gc-card-avatar-img" onerror="this.style.display='none';const n=this.nextElementSibling;if(n){n.classList.remove('hidden');}" /><div class="hidden gc-card-avatar-fallback">${initials}</div>`;
+      }
+    })
+    .catch(() => { c._photoFetching = false; });
+}
+
 
 function switchDetailTab(tabName) {
   document.querySelectorAll('.detail-tab').forEach(t => t.classList.remove('active'));
@@ -2940,8 +3220,18 @@ function switchDetailTab(tabName) {
   if (panel) { panel.style.display = 'block'; panel.style.animation = 'none'; void panel.offsetHeight; panel.style.animation = ''; }
 
   const currentClassId = window._currentDetailClassroom?.classroomId || window._currentDetailClassroom?.id || detailCurrentClassroomId;
+  // Instant re-render from cached state so the active tab shows data without
+  // waiting for a network round-trip or a full page refresh.
   if (tabName === 'files' && currentClassId) {
-    fetchAndRenderClassroomFiles(currentClassId);
+    if (Array.isArray(classroomFilesCache) && classroomFilesCache.length > 0) {
+      renderClassroomFiles(classroomFilesCache);
+    } else {
+      fetchAndRenderClassroomFiles(currentClassId);
+    }
+  } else if (tabName === 'members' && currentClassId) {
+    if (Array.isArray(classroomMembersCache) && classroomMembersCache.length > 0) {
+      renderClassroomMembers(classroomMembersCache, currentClassId);
+    }
   }
 }
 
@@ -2949,55 +3239,578 @@ document.querySelectorAll('.detail-tab').forEach(tab => {
   tab.addEventListener('click', () => switchDetailTab(tab.getAttribute('data-detail-tab')));
 });
 
+// Render the classroom file grid from an already-resolved file list. Used by
+// the real-time files subscription and for instant tab-switch re-render.
+function renderClassroomFiles(files) {
+  if (!Array.isArray(files)) return;
+  classroomFilesCache = files;
+  const cid = detailCurrentClassroomId;
+  if (!cid) return;
+  try { localStorage.setItem(`openclass_files_${cid}`, JSON.stringify(files)); } catch (e) {}
+  fetchAndRenderClassroomFiles(cid, files, true);
+}
+
+// Render the People tab (Teachers + Classmates sections) from a members list.
+function renderClassroomMembers(members, classroomId) {
+  const container = document.getElementById('detail-members-list');
+  const teachersContainer = document.getElementById('detail-teachers-list');
+  const studentsCountEl = document.getElementById('detail-students-count');
+  if (!container) return;
+  container.innerHTML = '';
+  if (teachersContainer) teachersContainer.innerHTML = '';
+
+  if (!members || members.length === 0) {
+    container.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:20px 0;color:var(--text-muted);">No members.</div>';
+    return;
+  }
+  const currentUid = getAuth().currentUser?.uid;
+  const currentClassroom = window._currentDetailClassroom || {};
+  const creatorUid = currentClassroom.createdBy || currentClassroom.teacherId || currentClassroom.teacherUid;
+  const isCreator = currentUserProfile && detailCurrentClassroomId &&
+    (currentUserProfile.uid === getAuth().currentUser?.uid);
+  const isCreatorView = currentUserProfile && isTeacher(currentUserProfile) &&
+    classroomId && members.some(m => m.uid === currentUid && m.approved);
+
+  const teachers = members.filter(m => (m.role || '').toLowerCase() === 'teacher' || (creatorUid && m.uid === creatorUid));
+  const teacherUids = new Set(teachers.map(t => t.uid));
+  const students = members.filter(m => !teacherUids.has(m.uid));
+
+  // Fallback: when no member docs are available, derive the student count from
+  // the classroom memberCount so the People tab never shows "0 students".
+  let studentCount = students.length;
+  if (studentCount === 0 && !teachers.some(t => t.uid === currentUid)) {
+    const rawCount = Number(currentClassroom.memberCount || 0);
+    if (rawCount > 1) studentCount = rawCount - 1;
+  }
+  if (studentsCountEl) studentsCountEl.textContent = `${studentCount} student${studentCount === 1 ? '' : 's'}`;
+
+  const renderMemberRow = (m, targetEl) => {
+    const isSelf = m.uid === currentUid;
+    const row = document.createElement('div');
+    row.className = 'member-row';
+    const photoUrl = sanitizeProfilePhotoUrl(m.photoURL || '', m) || '/images/profile_placeholder.png';
+    row.innerHTML = `
+      <div class="member-avatar-sm" style="background-image:url('${photoUrl}');"></div>
+      <div class="member-info">
+        <div class="member-name">${m.displayName || 'Unknown'} ${isSelf ? '(You)' : ''}</div>
+        <div class="member-email">${m.email || ''}</div>
+      </div>
+      <span class="member-role-badge">${displayRole(m.role)}</span>
+      <div class="member-actions">
+        ${!isSelf ? `<button class="btn btn-outline start-floating-chat-btn" style="padding:4px 10px;font-size:0.8rem;margin-right:6px;color:#60a5fa;border-color:rgba(96,165,250,0.4);"><i class="material-icons" style="font-size:14px;vertical-align:-2px;margin-right:2px;">chat</i> Chat</button>` : ''}
+        ${!isSelf && (isCreatorView || isCreator) && (m.role || '').toLowerCase() !== 'teacher' && m.uid !== classroomId
+          ? `<button class="btn btn-outline remove-member-btn" data-uid="${m.uid}" data-name="${m.displayName || 'this member'}" style="padding:4px 10px;font-size:0.8rem;color:var(--danger);">Remove</button>`
+          : ''}
+      </div>`;
+
+    const chatBtn = row.querySelector('.start-floating-chat-btn');
+    chatBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openFloatingMessenger({
+        uid: m.uid,
+        displayName: m.displayName || 'User',
+        role: m.role || 'student',
+        photoURL: photoUrl,
+        classroomId: detailCurrentClassroomId || 'global'
+      });
+    });
+
+    targetEl.appendChild(row);
+  };
+
+  if (teachersContainer) {
+    if (teachers.length === 0) {
+      teachersContainer.innerHTML = '<div class="empty-state-sm" style="padding:10px 0;color:var(--text-muted);font-size:13px;">No teachers assigned.</div>';
+    } else {
+      teachers.forEach(t => renderMemberRow(t, teachersContainer));
+    }
+  }
+
+  if (students.length === 0) {
+    container.innerHTML = '<div class="empty-state-sm" style="padding:10px 0;color:var(--text-muted);font-size:13px;">No students enrolled yet.</div>';
+  } else {
+    students.forEach(s => renderMemberRow(s, container));
+  }
+
+  container.querySelectorAll('.remove-member-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm(`Remove ${btn.dataset.name} from this classroom?`)) return;
+      try {
+        await removeMember(classroomId, btn.dataset.uid, currentUserProfile);
+      } catch (err) { alert(err.message); }
+    });
+  });
+}
+
+// ─── Course Stream feed ────────────────────────────────────────────────────
+// Rich, type-specific cards driven by the classrooms/{classId}/stream
+// sub-collection (single source of truth for the Stream tab — no cross-course
+// leakage because the subscription is scoped to the active classroom).
+
+function escapeHtml(value) {
+  return String(value === undefined || value === null ? '' : value)
+    .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function streamEventMeta(type) {
+  const map = {
+    file: { icon: '📄', label: 'File', color: '#3B82F6' },
+    assignment: { icon: '📝', label: 'Assignment', color: '#8B5CF6' },
+    quiz: { icon: '❓', label: 'Quiz', color: '#F59E0B' },
+    announcement: { icon: '📢', label: 'Announcement', color: '#EF4444' },
+    meeting: { icon: '🎥', label: 'Live Class', color: '#10B981' },
+  };
+  return map[type] || { icon: '📌', label: 'Update', color: '#64748B' };
+}
+
+function buildStreamCard(ev, classId) {
+  const meta = streamEventMeta(ev.type);
+  const card = document.createElement('div');
+  card.className = `gc-stream-card gc-stream-card--${ev.type || 'system'}`;
+  const ts = ev.createdAt && typeof ev.createdAt.toMillis === 'function' ? ev.createdAt.toMillis() : Date.now();
+  const metaData = ev.metadata || {};
+  const title = ev.title || meta.label;
+  const message = ev.message || '';
+
+  let action = '';
+  if (ev.type === 'file') {
+    action = `<button class="btn btn-outline stream-download-btn" data-file-id="${escapeHtml(ev.itemId)}" data-name="${escapeHtml(metaData.originalName || title)}" style="padding:5px 14px;font-size:12px;"><i class="material-icons" style="font-size:14px;vertical-align:-2px;margin-right:2px;">download</i> Download</button>`;
+  } else if (ev.type === 'assignment' || ev.type === 'quiz') {
+    action = `<button class="btn btn-outline stream-open-classwork-btn" style="padding:5px 14px;font-size:12px;color:#60a5fa;border-color:rgba(96,165,250,0.4);"><i class="material-icons" style="font-size:14px;vertical-align:-2px;margin-right:2px;">${ev.type === 'quiz' ? 'quiz' : 'assignment'}</i> Open ${ev.type === 'quiz' ? 'Quiz' : 'Assignment'}</button>`;
+  } else if (ev.type === 'meeting') {
+    action = metaData.meetingLink
+      ? `<button class="btn btn-primary stream-join-meeting-btn" data-link="${escapeHtml(metaData.meetingLink)}" style="padding:5px 14px;font-size:12px;"><i class="material-icons" style="font-size:14px;vertical-align:-2px;margin-right:2px;">videocam</i> Join Class</button>`
+      : `<button class="btn btn-outline stream-open-meetings-btn" style="padding:5px 14px;font-size:12px;"><i class="material-icons" style="font-size:14px;vertical-align:-2px;margin-right:2px;">schedule</i> View Meetings</button>`;
+  }
+
+  card.innerHTML = `
+    <div class="gc-stream-card-head">
+      <div class="gc-stream-card-icon" style="background:${meta.color};">${meta.icon}</div>
+      <div class="gc-stream-card-head-text">
+        <div class="gc-stream-card-type" style="color:${meta.color};">${meta.label}</div>
+        <div class="gc-stream-card-title">${escapeHtml(title)}</div>
+      </div>
+    </div>
+    ${message ? `<div class="gc-stream-card-body">${escapeHtml(message)}</div>` : ''}
+    <div class="gc-stream-card-foot">
+      <span class="gc-stream-card-time">${timeAgo(ts)}</span>
+      ${action}
+    </div>`;
+  return card;
+}
+
+// ─── Class Activity timeline (enrollment/system logs) ───────────────────────
+// Restores the teacher's ORIGINAL stream experience: join logs (e.g.
+// "GOITA ROY (2202054) joined the classroom"), join requests/rejections,
+// classroom lifecycle and student submissions are rendered in a timeline that
+// ONLY teachers see. Students get the filtered, clean view (announcement posts
+// + Course Activity cards) with no join logs and no composer.
+//
+// Teacher-content creation events (assignment/quiz/meeting/announcement) are
+// excluded here on purpose — they are already shown as rich Course Activity
+// cards, so nothing is hidden, just not duplicated.
+
+const STREAM_CARD_COVERED_TYPES = new Set([
+  'assignment_created',
+  'quiz_created',
+  'meeting_scheduled',
+  'classwork_created',
+  'classwork_deleted',
+  'announcement',
+]);
+
+function renderStreamActivity(activity, isTeacherView) {
+  const container = document.getElementById('detail-activity-list');
+  const section = document.getElementById('detail-activity-section');
+  if (!container) return;
+  if (!isTeacherView) {
+    if (section) section.style.display = 'none';
+    return;
+  }
+  if (section) section.style.display = 'block';
+  const items = (Array.isArray(activity) ? activity : [])
+    .filter(a => a && !STREAM_CARD_COVERED_TYPES.has(a.type))
+    .slice(0, 50);
+  if (items.length === 0) {
+    container.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:24px 0;color:var(--text-muted);font-size:14px;">No activity yet. When students join or submit work it will show here.</div>';
+    return;
+  }
+  const toMillis = (ts) => ts
+    ? (typeof ts.toMillis === 'function' ? ts.toMillis()
+      : (ts instanceof Date ? ts.getTime() : Date.parse(ts) || 0))
+    : 0;
+  container.innerHTML = items.map(a => {
+    const type = a.type || '';
+    const ts = toMillis(a.timestamp || a.createdAt);
+    const isJoin = type === 'member_approved' || type === 'join_requested' || type === 'join_request' || type === 'join_rejected';
+    const isSubmit = type === 'assignment_submitted' || type === 'quiz_submitted';
+    const icon = isJoin ? 'person_add' : (type === 'classroom_created' ? 'school' : (isSubmit ? 'assignment_turned_in' : 'campaign'));
+    const label = a.userName || a.actorName || 'Classroom';
+    const desc = a.description || a.message || '';
+    return `<div class="timeline-item">
+      <div class="timeline-dot${isJoin ? ' primary' : ''}"><i class="material-icons" style="font-size:18px;">${icon}</i></div>
+      <div class="timeline-content">
+        <h4>${escapeHtml(label)}</h4>
+        <p>${escapeHtml(desc)}</p>
+        <span class="timeline-time">${ts ? timeAgo(ts) : ''}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Downloads a classroom file through the Express API (which streams from
+// storage) so the Stream card download button works for enrolled students.
+async function downloadStreamFile(classId, fileId, name) {
+  if (!classId || !fileId) return;
+  try {
+    const auth = getAuth();
+    const user = auth.currentUser;
+    let token = '';
+    if (user) {
+      try { token = await user.getIdToken(); } catch (e) {}
+    }
+    const base = (import.meta.env && (import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://openclass-project.onrender.com' : 'http://localhost:5000'))) || 'http://localhost:5000';
+    const response = await fetch(`${base}/api/classrooms/${classId}/files/${fileId}/download`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name || 'file';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+  } catch (err) {
+    console.warn('[Stream] Download failed, opening Files tab instead:', err);
+    switchDetailTab('files');
+  }
+}
+
+function renderNoticeText(text) {
+  if (!text) return '';
+  const escaped = String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const formatted = escaped.replace(urlRegex, (url) => {
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:underline break-all">${url}</a>`;
+  });
+  
+  return formatted.replace(/\n/g, '<br/>');
+}
+
+function renderNoticeAttachments(attachments) {
+  if (!Array.isArray(attachments) || attachments.length === 0) return '';
+  return `<div class="gc-notice-attachments" style="margin-top:10px; display:flex; flex-direction:column; gap:6px;">
+    ${attachments.map(att => {
+      if (!att) return '';
+      if (att.type === 'link' || att.url) {
+        const u = String(att.url || '#').replace(/"/g, '&quot;');
+        const t = String(att.title || att.name || att.url || 'Link').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        return `<a href="${u}" target="_blank" rel="noopener noreferrer" class="gc-notice-attachment-link" style="display:inline-flex; align-items:center; gap:6px; color:var(--primary); font-size:13px; text-decoration:none;"><i class="material-icons" style="font-size:16px;">link</i> ${t}</a>`;
+      }
+      const n = String(att.name || 'Attachment').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      return `<div class="gc-notice-attachment-item" style="font-size:13px; color:var(--text-muted);"><i class="material-icons" style="font-size:16px; vertical-align:-3px; margin-right:4px;">attach_file</i> ${n}</div>`;
+    }).join('')}
+  </div>`;
+}
+
+window.renderNoticeText = renderNoticeText;
+window.renderNoticeAttachments = renderNoticeAttachments;
+
+function getEffectiveIsTeacher(isTeacherParam) {
+  if (typeof isTeacherParam === 'boolean') return isTeacherParam;
+  if (isTeacherParam && typeof isTeacherParam === 'object') {
+    return isTeacher(isTeacherParam) || isTeacherParam.role === 'teacher';
+  }
+  const u = currentUserProfile || window.currentUserProfile || window.currentUser || {};
+  const role = u.role || localStorage.getItem('openclass_user_role') || '';
+  return isTeacher(u) || String(role).toLowerCase() === 'teacher';
+}
+
+function renderAnnouncements(notices, isTeacherParam) {
+  const isTeacherView = getEffectiveIsTeacher(isTeacherParam);
+  const esc = (v) => String(v || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const fmtTs = (ts) => new Date(ts).toLocaleString();
+  const toMillis = (ts) => ts && typeof ts.toMillis === 'function' ? ts.toMillis() : Date.now();
+  const postsEl = document.getElementById('detail-posts-list') || document.getElementById('gc-announcements-feed');
+  if (postsEl) {
+    if (!notices || notices.length === 0) {
+      postsEl.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);font-size:14px;">No posts yet. Announce something to your class!</div>';
+    } else {
+      postsEl.innerHTML = notices.map(n => {
+        const ts = toMillis(n.createdAt);
+        const pinned = n.pinned === true;
+        const initials = (n.createdByName || 'U').split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
+        const currentUser = currentUserProfile || window.currentUserProfile || window.currentUser || {};
+        const classroom = window._currentDetailClassroom || {};
+        const authorPhoto = n.authorPhotoURL || n.createdByPhotoURL || n.authorAvatar || n.createdPhotoURL || classroom.teacherPhotoURL || currentUser?.photoURL || '';
+
+        const kebab = isTeacherView ? `
+        <div class="relative inline-block text-left">
+          <!-- 3-Dot Button -->
+          <button 
+            type="button" 
+            class="w-8 h-8 rounded-xl bg-[#1a233a]/80 hover:bg-[#253252] text-slate-300 hover:text-white flex items-center justify-center transition border border-slate-700/60 shadow-sm focus:outline-none kebab-trigger"
+            style="background:#1a233a; border:1px solid rgba(51,65,85,0.6); color:#cbd5e1;"
+            onclick="event.stopPropagation(); const m = this.nextElementSibling; document.querySelectorAll('.notice-kebab-menu').forEach(d => d !== m && d.classList.add('hidden')); m.classList.toggle('hidden');"
+            data-notice-menu="${esc(n.id)}"
+            title="More options"
+            aria-label="More options"
+          >
+            <svg class="w-4 h-4 pointer-events-none" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"/>
+            </svg>
+          </button>
+
+          <!-- Plain-Text Only Dark Navy Popup Dropdown (No Emojis) -->
+          <div class="notice-kebab-menu hidden absolute right-0 top-full mt-1.5 w-32 bg-[#0e1626] border border-slate-700 rounded-xl shadow-2xl p-1.5 z-50 flex flex-col gap-1 backdrop-blur-md" style="background:#0e1626; border:1px solid rgba(51,65,85,0.8); border-radius:12px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);" id="gc-post-menu-${esc(n.id)}">
+            <button 
+              type="button" 
+              class="w-full px-3 py-2 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-[#1a253c] hover:text-white transition" 
+              style="background:transparent; border:none; color:#e2e8f0;"
+              data-notice-action="pin" data-id="${esc(n.id)}" data-pinned="${pinned ? '1' : '0'}"
+              onclick="window.pinNotice && window.pinNotice('${esc(n.id)}')"
+            >
+              ${pinned ? 'Unpin' : 'Pin'}
+            </button>
+            
+            <button 
+              type="button" 
+              class="w-full px-3 py-2 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-[#1a253c] hover:text-white transition" 
+              style="background:transparent; border:none; color:#e2e8f0;"
+              data-notice-action="edit" data-id="${esc(n.id)}"
+              onclick="window.editNotice && window.editNotice('${esc(n.id)}')"
+            >
+              Edit
+            </button>
+            
+            <button 
+              type="button" 
+              class="w-full px-3 py-2 rounded-lg text-left text-xs font-medium text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 transition" 
+              style="background:transparent; border:none; color:#fb7185;"
+              data-notice-action="delete" data-id="${esc(n.id)}"
+              onclick="window.deleteNotice && window.deleteNotice('${esc(n.id)}')"
+            >
+              Delete
+            </button>
+          </div>
+        </div>` : '';
+        const isGenericTitle = !n.title || n.title === 'Announcement' || n.title === `Announcement by ${n.createdByName}`;
+        const titleHtml = (!isGenericTitle && n.title) ? `<div class="font-semibold text-base text-slate-100 mb-2 mt-2">${renderNoticeText(n.title)}</div>` : '';
+        return `<div class="w-full bg-[#131b2e] border border-slate-800/80 rounded-2xl p-5 mb-4 relative flex flex-col gap-3 shadow-md gc-post-card${pinned ? ' gc-post-card--pinned' : ''}" data-notice-id="${esc(n.id)}" data-raw-title="${esc(n.title || '')}" data-raw-content="${esc(n.content || '')}">
+          ${pinned ? `<div class="gc-post-pinned text-xs text-amber-400 font-semibold flex items-center gap-1">📌 Pinned announcement</div>` : ''}
+          <!-- Header: Author Info + 3-Dot Menu -->
+          <div class="flex items-center justify-between relative w-full">
+            <!-- Left Author Info -->
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-full overflow-hidden border border-slate-700 shrink-0 bg-slate-800">
+                ${authorPhoto 
+                  ? `<img src="${authorPhoto}" class="w-full h-full object-cover" alt="Author" onerror="this.style.display='none'; if (this.nextElementSibling) this.nextElementSibling.classList.remove('hidden');" />`
+                  : ''}
+                <div class="${authorPhoto ? 'hidden' : ''} w-full h-full bg-blue-600 flex items-center justify-center font-bold text-white text-xs">${initials}</div>
+              </div>
+              <div>
+                <h4 class="text-sm font-semibold text-white leading-tight">${esc(n.createdByName || n.authorName) || 'Instructor'}</h4>
+                <span class="text-xs text-slate-400">${fmtTs(ts)}</span>
+              </div>
+            </div>
+            ${kebab}
+          </div>
+          ${titleHtml}
+          <!-- Announcement Content -->
+          <div class="text-sm text-slate-200 leading-relaxed pl-1">
+            ${renderNoticeText(n.content || n.text || '')}
+          </div>
+          ${renderNoticeAttachments(n.attachments)}
+        </div>`;
+      }).join('');
+
+      postsEl.querySelectorAll('.gc-post-kebab').forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const id = btn.getAttribute('data-notice-menu');
+          const menu = document.getElementById(`gc-post-menu-${id}`);
+          if (menu) menu.classList.toggle('hidden');
+        };
+      });
+
+      postsEl.querySelectorAll('[data-notice-action]').forEach(btn => {
+        btn.onclick = async (e) => {
+          e.stopPropagation();
+          const action = btn.getAttribute('data-notice-action');
+          const id = btn.getAttribute('data-id');
+          const classId = detailCurrentClassroomId || window._currentDetailClassroom?.classroomId;
+          if (!id || !classId) return;
+
+          if (action === 'pin') {
+            const isPinned = btn.getAttribute('data-pinned') === '1';
+            try {
+              await updateNotice(classId, id, { pinned: !isPinned });
+            } catch (err) {
+              console.error('Failed to pin/unpin announcement:', err);
+            }
+          } else if (action === 'edit') {
+            const card = btn.closest('.gc-post-card');
+            const rawContent = card ? card.getAttribute('data-raw-content') : '';
+            const newContent = prompt('Edit announcement:', rawContent || '');
+            if (newContent !== null && newContent.trim() !== '') {
+              try {
+                await updateNotice(classId, id, { content: newContent.trim() });
+              } catch (err) {
+                console.error('Failed to edit announcement:', err);
+              }
+            }
+          } else if (action === 'delete') {
+            if (confirm('Are you sure you want to delete this announcement?')) {
+              try {
+                await deleteNotice(classId, id);
+              } catch (err) {
+                console.error('Failed to delete announcement:', err);
+              }
+            }
+          }
+        };
+      });
+    }
+  }
+  const matsEl = document.getElementById('detail-notices-list');
+  if (matsEl) {
+    if (!notices || notices.length === 0) {
+      matsEl.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:20px 0;color:var(--text-muted);font-size:14px;">No materials posted yet.</div>';
+    } else {
+      matsEl.innerHTML = notices.map(n => {
+        const ts = toMillis(n.createdAt);
+        return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;background:var(--bg-color);border:1px solid var(--border);border-radius:10px;margin-bottom:8px;">
+          <div>
+            <div style="font-weight:600;font-size:14px;color:var(--text-main);">${n.pinned === true ? '<i class="material-icons" style="font-size:14px;vertical-align:-2px;color:var(--primary);">push_pin</i> ' : ''}${esc(n.title)}</div>
+            <div style="font-size:12px;color:var(--text-muted);">${esc(n.createdByName) || 'Unknown'} &middot; ${fmtTs(ts)}</div>
+          </div>
+          <span class="material-icons" style="color:var(--primary);font-size:20px;">description</span>
+        </div>`;
+      }).join('');
+    }
+  }
+}
+
+window.pinNotice = async function(noticeId) {
+  const classId = detailCurrentClassroomId || window._currentDetailClassroom?.classroomId;
+  if (!noticeId || !classId) return;
+  const card = document.querySelector(`[data-notice-id="${noticeId}"]`);
+  const pinBtn = card ? card.querySelector('[data-notice-action="pin"]') : null;
+  const isPinned = pinBtn ? pinBtn.getAttribute('data-pinned') === '1' : false;
+  try {
+    await updateNotice(classId, noticeId, { pinned: !isPinned });
+  } catch (err) {
+    console.error('Failed to pin/unpin announcement:', err);
+  }
+};
+
+window.editNotice = async function(noticeId) {
+  const classId = detailCurrentClassroomId || window._currentDetailClassroom?.classroomId;
+  if (!noticeId || !classId) return;
+  const card = document.querySelector(`[data-notice-id="${noticeId}"]`);
+  const rawContent = card ? card.getAttribute('data-raw-content') : '';
+  const newContent = prompt('Edit announcement:', rawContent || '');
+  if (newContent !== null && newContent.trim() !== '') {
+    try {
+      await updateNotice(classId, noticeId, { content: newContent.trim() });
+    } catch (err) {
+      console.error('Failed to edit announcement:', err);
+    }
+  }
+};
+
+window.deleteNotice = async function(noticeId) {
+  const classId = detailCurrentClassroomId || window._currentDetailClassroom?.classroomId;
+  if (!noticeId || !classId) return;
+  if (confirm('Are you sure you want to delete this announcement?')) {
+    try {
+      await deleteNotice(classId, noticeId);
+    } catch (err) {
+      console.error('Failed to delete announcement:', err);
+    }
+  }
+};
+
+function renderStream(events, classroomId, isTeacherParam) {
+  const isTeacherView = getEffectiveIsTeacher(isTeacherParam);
+
+  // 1. Toggle announcement creation box & toolbar based on role (Teacher: show, Student: hide)
+  const announceBox = document.getElementById('gc-announce-box');
+  if (announceBox) announceBox.style.display = isTeacherView ? 'block' : 'none';
+  const announceToolbar = document.getElementById('announce-toolbar');
+  if (announceToolbar) announceToolbar.style.display = isTeacherView ? 'flex' : 'none';
+
+  // 2. Toggle system join activity logs section (Teacher: show, Student: hide)
+  const activitySection = document.getElementById('detail-activity-section');
+  if (activitySection) activitySection.style.display = isTeacherView ? 'block' : 'none';
+
+  // 3. Render course activity feed cards (announcements, assignments, quizzes, files, meetings)
+  const container = document.getElementById('detail-stream-feed');
+  if (!container) return;
+  if (!events || events.length === 0) {
+    container.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No course activity yet. Upload materials, post assignments, quizzes or announcements to see them here.</div>';
+    return;
+  }
+  container.innerHTML = '';
+  events.forEach(ev => {
+    const card = buildStreamCard(ev, classroomId);
+
+    const dlBtn = card.querySelector('.stream-download-btn');
+    if (dlBtn) dlBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      downloadStreamFile(classroomId, dlBtn.dataset.fileId, dlBtn.dataset.name);
+    });
+
+    const classworkBtn = card.querySelector('.stream-open-classwork-btn');
+    if (classworkBtn) classworkBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      switchDetailTab('stats');
+    });
+
+    const joinBtn = card.querySelector('.stream-join-meeting-btn');
+    if (joinBtn) joinBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const link = joinBtn.dataset.link;
+      if (link) window.open(link, '_blank');
+      else switchDetailTab('meetings');
+    });
+
+    const meetingsBtn = card.querySelector('.stream-open-meetings-btn');
+    if (meetingsBtn) meetingsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      switchDetailTab('meetings');
+    });
+
+    container.appendChild(card);
+  });
+}
+
+window.renderAnnouncements = renderAnnouncements;
+window.renderStream = renderStream;
+
 let subscribeDetailData = function subscribeDetailDataBase(classroomId) {
   if (detailStatsUnsub) detailStatsUnsub();
   if (detailMembersUnsub) detailMembersUnsub();
   if (detailRequestsUnsub) detailRequestsUnsub();
   if (detailActivityUnsub) detailActivityUnsub();
+  if (detailStreamUnsub) detailStreamUnsub();
   if (detailNoticesUnsub) detailNoticesUnsub();
+  if (detailFilesUnsub) detailFilesUnsub();
+
+  detailFilesUnsub = subscribeToClassroomFiles(classroomId, (files) => {
+    if (!Array.isArray(files)) return;
+    renderClassroomFiles(files);
+  });
 
   detailNoticesUnsub = subscribeNotices(classroomId, (notices) => {
-    const esc = (v) => String(v || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-    const fmtTs = (ts) => new Date(ts).toLocaleString();
-    const toMillis = (ts) => ts && typeof ts.toMillis === 'function' ? ts.toMillis() : Date.now();
-    const postsEl = document.getElementById('detail-posts-list');
-    if (postsEl) {
-      if (!notices || notices.length === 0) {
-        postsEl.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);font-size:14px;">No posts yet. Announce something to your class!</div>';
-      } else {
-        postsEl.innerHTML = notices.map(n => {
-          const ts = toMillis(n.createdAt);
-          const initials = (n.createdByName || 'U').split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
-          return `<div style="background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:16px 20px;">
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-              <div style="width:36px;height:36px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:700;flex-shrink:0;">${initials}</div>
-              <div>
-                <div style="font-weight:700;font-size:14px;color:var(--text-main);">${esc(n.createdByName) || 'Unknown'}</div>
-                <div style="font-size:12px;color:var(--text-muted);">${fmtTs(ts)}</div>
-              </div>
-            </div>
-            <div style="font-size:14px;color:var(--text-main);white-space:pre-wrap;">${esc(n.content)}</div>
-          </div>`;
-        }).join('');
-      }
-    }
-    const matsEl = document.getElementById('detail-notices-list');
-    if (matsEl) {
-      if (!notices || notices.length === 0) {
-        matsEl.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:20px 0;color:var(--text-muted);font-size:14px;">No materials posted yet.</div>';
-      } else {
-        matsEl.innerHTML = notices.map(n => {
-          const ts = toMillis(n.createdAt);
-          return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;background:var(--bg-color);border:1px solid var(--border);border-radius:10px;margin-bottom:8px;">
-            <div>
-              <div style="font-weight:600;font-size:14px;color:var(--text-main);">${esc(n.title)}</div>
-              <div style="font-size:12px;color:var(--text-muted);">${esc(n.createdByName) || 'Unknown'} &middot; ${fmtTs(ts)}</div>
-            </div>
-            <span class="material-icons" style="color:var(--primary);font-size:20px;">description</span>
-          </div>`;
-        }).join('');
-      }
-    }
+    const isTeacherView = !!(currentUserProfile && isTeacher(currentUserProfile));
+    renderAnnouncements(notices, isTeacherView);
   });
 
   detailStatsUnsub = subscribeToClassroomStats(classroomId, (stats) => {
@@ -3012,121 +3825,22 @@ let subscribeDetailData = function subscribeDetailDataBase(classroomId) {
     if (n) n.textContent = stats.notes || 0;
   });
 
-  detailActivityUnsub = subscribeToClassroomActivity(classroomId, (activities) => {
-    const container = document.getElementById('detail-activity-list');
-    if (!container) return;
-    if (!activities || activities.length === 0) {
-      container.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No announcements yet.</div>';
-      return;
-    }
-    container.innerHTML = '';
-    activities.forEach(a => {
-      const div = document.createElement('div');
-      div.className = 'detail-activity-item';
-      const icon = a.type === 'classroom_created' ? 'add' :                   a.type === 'classroom_updated' ? 'edit' :
-                   a.type === 'classroom_archived' ? 'archive' :
-                   a.type === 'classroom_restored' ? 'unarchive' :
-                   a.type === 'member_approved' ? 'person_add' :
-                   a.type === 'member_removed' ? 'person_remove' :
-                   a.type === 'member_left' ? 'exit_to_app' :
-                   a.type === 'join_requested' ? 'person_search' :
-                   a.type === 'join_rejected' ? 'cancel' : 'notifications';
-      const dotClass = a.type === 'member_approved' || a.type === 'classroom_created' ? 'primary' : '';
-      const ts = a.timestamp ? a.timestamp.toMillis() : Date.now();
-      div.innerHTML = `
-        <div class="detail-activity-dot ${dotClass}"><i class="material-icons" style="font-size:16px;">${icon}</i></div>
-        <div class="detail-activity-content">
-          <h4>${a.description || 'Activity'}</h4>
-          <p>${a.userName || ''}</p>
-          <span class="detail-activity-time">${timeAgo(ts)}</span>
-        </div>`;
-      container.appendChild(div);
-    });
+  detailStreamUnsub = subscribeToClassroomStream(classroomId, (events) => {
+    const isTeacherView = !!(currentUserProfile && isTeacher(currentUserProfile));
+    renderStream(events, classroomId, isTeacherView);
   });
 
-  const isCreator = currentUserProfile && detailCurrentClassroomId &&
-    (currentUserProfile.uid === getAuth().currentUser?.uid);
+  // Teacher-only Class Activity timeline (join logs + enrollment/system updates).
+  // Students never see this — they get the filtered, clean stream (see
+  // renderStreamActivity which hides the section for non-teachers).
+  detailActivityUnsub = subscribeToClassroomActivity(classroomId, (activity) => {
+    const isTeacherView = !!(currentUserProfile && isTeacher(currentUserProfile));
+    renderStreamActivity(activity, isTeacherView);
+  });
 
   detailMembersUnsub = subscribeToClassroomMembers(classroomId, (members) => {
-    const container = document.getElementById('detail-members-list');
-    const teachersContainer = document.getElementById('detail-teachers-list');
-    const studentsCountEl = document.getElementById('detail-students-count');
-    if (!container) return;
-    container.innerHTML = '';
-    if (teachersContainer) teachersContainer.innerHTML = '';
-
-    if (!members || members.length === 0) {
-      container.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:20px 0;color:var(--text-muted);">No members.</div>';
-      return;
-    }
-    const currentUid = getAuth().currentUser?.uid;
-    const currentClassroom = window._currentDetailClassroom || {};
-    const creatorUid = currentClassroom.createdBy || currentClassroom.teacherId || currentClassroom.teacherUid;
-    const isCreatorView = currentUserProfile && isTeacher(currentUserProfile) &&
-      classroomId && members.some(m => m.uid === currentUid && m.approved);
-
-    const teachers = members.filter(m => (m.role || '').toLowerCase() === 'teacher' || (creatorUid && m.uid === creatorUid));
-    const teacherUids = new Set(teachers.map(t => t.uid));
-    const students = members.filter(m => !teacherUids.has(m.uid));
-
-    if (studentsCountEl) studentsCountEl.textContent = `${students.length} student${students.length === 1 ? '' : 's'}`;
-
-    const renderMemberRow = (m, targetEl) => {
-      const isSelf = m.uid === currentUid;
-      const row = document.createElement('div');
-      row.className = 'member-row';
-      const photoUrl = sanitizeProfilePhotoUrl(m.photoURL || '', m) || '/images/profile_placeholder.png';
-      row.innerHTML = `
-        <div class="member-avatar-sm" style="background-image:url('${photoUrl}');"></div>
-        <div class="member-info">
-          <div class="member-name">${m.displayName || 'Unknown'} ${isSelf ? '(You)' : ''}</div>
-          <div class="member-email">${m.email || ''}</div>
-        </div>
-        <span class="member-role-badge">${displayRole(m.role)}</span>
-        <div class="member-actions">
-          ${!isSelf ? `<button class="btn btn-outline start-floating-chat-btn" style="padding:4px 10px;font-size:0.8rem;margin-right:6px;color:#60a5fa;border-color:rgba(96,165,250,0.4);"><i class="material-icons" style="font-size:14px;vertical-align:-2px;margin-right:2px;">chat</i> Chat</button>` : ''}
-          ${!isSelf && (isCreatorView || isCreator) && (m.role || '').toLowerCase() !== 'teacher' && m.uid !== classroomId
-            ? `<button class="btn btn-outline remove-member-btn" data-uid="${m.uid}" data-name="${m.displayName || 'this member'}" style="padding:4px 10px;font-size:0.8rem;color:var(--danger);">Remove</button>`
-            : ''}
-        </div>`;
-
-      const chatBtn = row.querySelector('.start-floating-chat-btn');
-      chatBtn?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openFloatingMessenger({
-          uid: m.uid,
-          displayName: m.displayName || 'User',
-          role: m.role || 'student',
-          photoURL: photoUrl,
-          classroomId: detailCurrentClassroomId || 'global'
-        });
-      });
-
-      targetEl.appendChild(row);
-    };
-
-    if (teachersContainer) {
-      if (teachers.length === 0) {
-        teachersContainer.innerHTML = '<div class="empty-state-sm" style="padding:10px 0;color:var(--text-muted);font-size:13px;">No teachers assigned.</div>';
-      } else {
-        teachers.forEach(t => renderMemberRow(t, teachersContainer));
-      }
-    }
-
-    if (students.length === 0) {
-      container.innerHTML = '<div class="empty-state-sm" style="padding:10px 0;color:var(--text-muted);font-size:13px;">No students enrolled yet.</div>';
-    } else {
-      students.forEach(s => renderMemberRow(s, container));
-    }
-
-    container.querySelectorAll('.remove-member-btn').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        if (!confirm(`Remove ${btn.dataset.name} from this classroom?`)) return;
-        try {
-          await removeMember(classroomId, btn.dataset.uid, currentUserProfile);
-        } catch (err) { alert(err.message); }
-      });
-    });
+    classroomMembersCache = Array.isArray(members) ? members : [];
+    renderClassroomMembers(members, classroomId);
   });
 
   const canManageRequests = currentUserProfile &&
@@ -3181,26 +3895,6 @@ let subscribeDetailData = function subscribeDetailDataBase(classroomId) {
 }
 
 // ─── NEW MODULE IMPORTS ────────────────────────────────────────
-
-import {
-  createAssignment, updateAssignment, deleteAssignment,
-  publishAssignment, closeAssignment,
-  subscribeAssignments, submitAssignment, gradeAssignment,
-  subscribeSubmissions, subscribeMySubmission, uploadFile
-} from './assignmentService.js';
-import {
-  createQuiz, updateQuiz, deleteQuiz, publishQuiz, closeQuiz,
-  subscribeQuizzes, submitQuizAttempt,
-  subscribeMyAttempt, subscribeLeaderboard, subscribeQuizAnalytics,
-  subscribeAttemptHistory,
-  saveToQuestionBank, subscribeQuestionBank, deleteFromQuestionBank,
-  QTYPE
-} from './quizService.js';
-import { uploadNote, deleteNote, subscribeNotes, getCategories, searchNotes } from './noteService.js';
-import { autoAttend, markAttendance, markAllPresent, subscribeAttendance, subscribeStudentHistory, getTodayStats, getMonthRange, exportCSV, getMembers } from './attendanceService.js';
-import { subscribeReminders, createReminder, deleteReminder, fetchCalendarEvents } from './calendarService.js';
-import { getClassroomAnalytics, getStudentPerformance, exportToCSV, downloadCSV, printElement } from './analyticsService.js';
-import { createNotification, createBulkNotifications, subscribeNotifications, markAsRead, markAllAsRead, deleteNotification, setupFCM, onForegroundMessage } from './notificationService.js';
 
 // ─── EXTENDED GLOBAL STATE ─────────────────────────────────────
 
@@ -5666,46 +6360,100 @@ function initCalendar(uid) {
 // ═══════════════════════════ NOTIFICATIONS ═══════════════════════
 
 function parseNotifTime(n) {
-  const t = n?.createdAt;
+  const t = n?.timestamp || n?.createdAt;
   if (!t) return null;
   if (typeof t.toDate === 'function') return t.toDate();
+  if (typeof t.toMillis === 'function') return new Date(t.toMillis());
   if (typeof t === 'string' || typeof t === 'number') return new Date(t);
   return null;
 }
 
+// Course-color pill / icon metadata per notification type (📁 File, 📝 Assignment, 📢 Notice)
+const NOTIF_TYPE_META = {
+  file: { icon: '📁', label: 'File', color: '#3B82F6' },
+  assignment: { icon: '📝', label: 'Assignment', color: '#8B5CF6' },
+  quiz: { icon: '📝', label: 'Quiz', color: '#F59E0B' },
+  announcement: { icon: '📢', label: 'Notice', color: '#EF4444' },
+  meeting: { icon: '🎥', label: 'Meeting', color: '#10B981' },
+  meeting_created: { icon: '🎥', label: 'Meeting', color: '#10B981' },
+  join_request: { icon: '👤', label: 'Request', color: '#06B6D4' },
+  chat: { icon: '💬', label: 'Chat', color: '#6366F1' },
+  attendance: { icon: '✅', label: 'Attendance', color: '#22C55E' },
+  system: { icon: '🔔', label: 'Update', color: '#64748B' },
+};
+function notifMeta(type) { return NOTIF_TYPE_META[type] || NOTIF_TYPE_META.system; }
+
+function notifIsUnread(n) { return n.isRead === undefined ? !n.read : !n.isRead; }
+
 function renderNotificationItem(notif, compact = false) {
   const div = document.createElement('div');
-  const isRead = notif.isRead === undefined ? !!notif.read : !!notif.isRead;
+  const isRead = notifIsUnread(notif) === false;
   div.className = `notif-item ${isRead ? 'notif-item--read' : ''}`;
-  const icons = { assignment: 'assignment', quiz: 'quiz', meeting: 'videocam', announcement: 'campaign', chat: 'forum', attendance: 'fact_check', system: 'info', join_request: 'person_add' };
-  const icon = icons[notif.type] || 'notifications';
+  const meta = notifMeta(notif.type);
   const time = parseNotifTime(notif);
-  const timeStr = time ? time.toLocaleString() : '';
+  const timeStr = time ? timeAgo(time) : '';
   const body = notif.message || notif.body || '';
+  const courseName = notif.className || notif.courseName || '';
   div.innerHTML = `
-    <div class="notif-icon"><i class="material-icons" style="font-size:20px;">${icon}</i></div>
+    <div class="notif-pill" style="background:${meta.color};" title="${meta.label}">${meta.icon}</div>
     <div class="notif-content">
-      <div class="notif-title">${notif.title}</div>
-      <div class="notif-body">${body}</div>
+      ${courseName
+        ? `<div class="notif-course">${courseName}</div><div class="notif-body">${body || notif.title || ''}</div>`
+        : `<div class="notif-title">${notif.title || ''}</div><div class="notif-body">${body}</div>`}
       <div class="notif-time">${timeStr}</div>
     </div>
-    ${!compact ? `<div class="notif-actions">${!isRead ? `<button class="notif-mark-read icon-btn" data-id="${notif.id}" style="font-size:16px;"><i class="material-icons">mark_email_read</i></button>` : ''}<button class="notif-delete icon-btn" data-id="${notif.id}" style="font-size:16px;color:var(--text-muted);"><i class="material-icons">delete</i></button></div>` : ''}`;
+    ${!isRead ? '<span class="notif-unread-dot"></span>' : ''}
+    ${!compact ? `<div class="notif-actions">${!isRead ? `<button class="notif-mark-read icon-btn" data-id="${notif.id}" style="font-size:16px;"><i class="material-icons">mark_email_read</i></button>` : ''}<button class="notif-delete icon-btn" data-id="${notif.id}" style="font-size:16px;color:var(--text-muted);"><i class="material-icons">delete</i></button></div>` : ''}
+  `;
   return div;
+}
+
+// Marks a notification read using whichever backend owns it (users/{uid}/notifications
+// sub-collection vs legacy top-level notifications collection).
+async function markNotificationReadById(notif) {
+  if (!notif || !notif.id) return;
+  try {
+    if (notif._source === 'sub') {
+      await markUserNotificationRead(currentUserProfile.uid, notif.id);
+    } else {
+      await markAsRead(notif.id);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function deleteNotificationById(notif) {
+  if (!notif || !notif.id) return;
+  try {
+    if (notif._source === 'sub') {
+      await deleteUserNotification(currentUserProfile.uid, notif.id);
+    } else {
+      await deleteNotification(notif.id);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// Click handler: mark read + instantly open the source classroom.
+function openNotificationClassroom(notif) {
+  const classId = notif.classId || notif.data?.classId || (notif.data && notif.data.classroomId);
+  if (classId) {
+    markNotificationReadById(notif);
+    openClassroomDetail({ classroomId: classId, classroomName: notif.className || notif.courseName || '' });
+  } else {
+    markNotificationReadById(notif);
+  }
 }
 
 function renderNotificationDropdown(notifications) {
   const list = document.getElementById('notif-dropdown-list');
   if (!list) return;
-  const isUnread = (n) => n.isRead === undefined ? !n.read : !n.isRead;
-  const unread = notifications.filter(isUnread);
+  const unread = notifications.filter(notifIsUnread);
   const badge = document.getElementById('notif-badge');
   if (badge) {
     if (unread.length > 0) {
       badge.textContent = unread.length > 99 ? '99+' : unread.length;
       badge.style.display = '';
     } else {
-      // Force-clear: if nothing in the notifications collection is unread for
-      // this user, the badge MUST show nothing (removes any stale red '1').
+      // Force-clear: if nothing is unread for this user, the badge MUST show nothing.
       badge.textContent = '0';
       badge.style.display = 'none';
     }
@@ -5722,8 +6470,7 @@ function renderNotificationDropdown(notifications) {
     .forEach(n => {
       const el = renderNotificationItem(n, true);
       el.addEventListener('click', async () => {
-        if (!isUnread(n)) return;
-        try { await markAsRead(n.id); } catch (e) { /* ignore */ }
+        openNotificationClassroom(n);
       });
       list.appendChild(el);
     });
@@ -5741,29 +6488,48 @@ function renderNotificationFullList(notifications) {
     .sort((a, b) => ((parseNotifTime(b) || 0) - (parseNotifTime(a) || 0)))
     .forEach(n => {
       const el = renderNotificationItem(n, false);
+      el.addEventListener('click', () => { openNotificationClassroom(n); });
       container.appendChild(el);
 
     const markBtn = el.querySelector('.notif-mark-read');
     if (markBtn) markBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      try { await markAsRead(n.id); } catch (e) { /* ignore */ }
+      await markNotificationReadById(n);
     });
 
     const delBtn = el.querySelector('.notif-delete');
     if (delBtn) delBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      try { await deleteNotification(n.id); } catch (e) { /* ignore */ }
+      await deleteNotificationById(n);
     });
   });
 }
 
 function initNotifications(uid) {
+  if (notificationsTopUnsub) notificationsTopUnsub();
+  if (notificationsSubUnsub) notificationsSubUnsub();
   if (notificationsUnsub) notificationsUnsub();
-  notificationsUnsub = subscribeNotifications(uid, (notifications) => {
-    notificationsCache = notifications;
-    renderNotificationDropdown(notifications);
+
+  let merged = new Map();
+
+  // Primary: each user's own users/{uid}/notifications sub-collection.
+  notificationsSubUnsub = subscribeUserNotifications(uid, (subNotifs) => {
+    subNotifs.forEach(n => merged.set(n.id, n));
+    notificationsCache = [...merged.values()].sort((a, b) => (parseNotifTime(b) || 0) - (parseNotifTime(a) || 0));
+    renderNotificationDropdown(notificationsCache);
     if (document.getElementById('tab-notifications')?.classList.contains('active-tab')) {
-      renderNotificationFullList(notifications);
+      renderNotificationFullList(notificationsCache);
+    }
+  });
+
+  // Secondary: legacy top-level notifications collection (older records, join
+  // requests). Merged + deduped so both surfaces never double-count.
+  notificationsTopUnsub = subscribeNotifications(uid, (topNotifs) => {
+    topNotifs.forEach(n => merged.set(n.id, n));
+    notificationsCache = [...merged.values()].sort((a, b) => (parseNotifTime(b) || 0) - (parseNotifTime(a) || 0));
+    renderNotificationDropdown(notificationsCache);
+    if (document.getElementById('tab-notifications')?.classList.contains('active-tab')) {
+      renderNotificationFullList(notificationsCache);
     }
   });
 
@@ -5798,14 +6564,25 @@ document.addEventListener('click', (e) => {
   }
 });
 
-document.getElementById('btn-mark-all-read')?.addEventListener('click', async () => {
+async function markAllNotificationsRead() {
   if (!currentUserProfile) return;
-  try { await markAllAsRead(currentUserProfile.uid); } catch (e) { /* ignore */ }
+  try {
+    const results = await Promise.allSettled([
+      markAllAsRead(currentUserProfile.uid),
+      markAllUserNotificationsRead(currentUserProfile.uid),
+    ]);
+    results.forEach(r => {
+      if (r.status === 'rejected') console.warn('mark-all-read failed for one backend:', r.reason);
+    });
+  } catch (e) { /* ignore */ }
+}
+
+document.getElementById('btn-mark-all-read')?.addEventListener('click', async () => {
+  await markAllNotificationsRead();
 });
 
 document.getElementById('btn-notif-mark-all')?.addEventListener('click', async () => {
-  if (!currentUserProfile) return;
-  try { await markAllAsRead(currentUserProfile.uid); } catch (e) { /* ignore */ }
+  await markAllNotificationsRead();
 });
 
 document.getElementById('btn-view-all-notifications')?.addEventListener('click', () => {
@@ -5902,9 +6679,10 @@ function initCalendarAndNotifications() {
   if (!currentUserProfile) return;
   initCalendar(currentUserProfile.uid);
   initNotifications(currentUserProfile.uid);
-  hookAssignmentNotifications();
-  hookQuizNotifications();
-  hookMeetingNotifications();
+  // NOTE: Assignment/quiz/meeting notification fan-out is now server-driven
+  // (classroomEvents.emitTeacherEvent). The legacy client-side createBulkNotifications
+  // hooks are disabled to prevent duplicate notifications.
+  // hookAssignmentNotifications(); hookQuizNotifications(); hookMeetingNotifications();
   // Load calendar events if tab exists
   if (document.getElementById('tab-calendar')) loadCalendarEvents();
 }
@@ -6375,6 +7153,17 @@ function showStudentStatusModal(profile) {
 
 function checkAccess(tabName) {
   return !!currentUserProfile;
+}
+
+// Re-subscribe the live classrooms list so mutations (create/join/edit/leave/
+// archive/delete) reflect immediately instead of waiting for a full refresh.
+function refreshClassroomsList() {
+  const authUser = getAuth().currentUser;
+  const uid = authUser?.uid || currentUserProfile?.uid;
+  if (!uid) return;
+  const role = currentUserProfile?.role || localStorage.getItem('openclass_user_role') || 'teacher';
+  if (classroomsUnsubscribe) classroomsUnsubscribe();
+  classroomsUnsubscribe = subscribeToUserClassrooms(uid, role, renderClassrooms);
 }
 
 // Hook into the tab click system to check access
@@ -7014,7 +7803,6 @@ document.addEventListener('DOMContentLoaded', () => {
 // ─── LIVE MEETINGS DASHBOARD & JITSI VIDEO CALL SDK ──────────────────────
 
 teacherMeetingsUnsub = null;
-let activeMeetingDataList = [];
 
 export function initLiveMeetingsModule(userProfile, userClassroomsPassed = []) {
   if (!userProfile) return;
@@ -7393,7 +8181,6 @@ export async function openInAppMeeting(meeting, userProfile) {
 // CLASSROOM FILE UPLOAD & RESOURCE SHARING MODULE
 // ══════════════════════════════════════════════════════════════════════════
 
-let classroomFilesCache = [];
 let filesSocketBound = false;
 
 // The realtime file broadcast socket is not wired up in the app yet (no global
@@ -7426,6 +8213,15 @@ function describeApiError(err) {
     return 'The server encountered an error. Please try again later.';
   }
   return msg;
+}
+
+function formatBytes(bytes = 0, decimals = 1) {
+  if (!bytes || bytes <= 0) return '0 B';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
 function getFileIconAndColor(ext = '', mime = '') {
@@ -7471,7 +8267,224 @@ function getSubject3DIconAndBg(subjectName = '', courseName = '') {
   };
 }
 
-export async function fetchAndRenderClassroomFiles(classroomId) {
+function deriveFileCategory(file) {
+  const ext = (file.fileType || '').toLowerCase();
+  if (ext === 'pdf') return 'PDF';
+  if (ext === 'ppt' || ext === 'pptx') return 'Slides';
+  if (['doc', 'docx', 'xls', 'xlsx', 'txt'].includes(ext)) return 'Documents';
+  if (['jpg', 'jpeg', 'png', 'webp'].includes(ext) || (file.mimeType || '').startsWith('image/')) return 'Images';
+  if (ext === 'zip') return 'ZIP';
+  return 'Other';
+}
+
+function sortAndFilterFiles(files, searchVal, categoryVal, sortVal) {
+  let out = Array.isArray(files) ? files.slice() : [];
+  const cat = (categoryVal || 'all').toLowerCase();
+  if (cat !== 'all') {
+    const getCat = (f) => (f.category || deriveFileCategory(f) || '').toLowerCase();
+    out = out.filter(f => getCat(f) === cat || (f.fileType || '').toLowerCase() === cat);
+  }
+  const q = (searchVal || '').trim().toLowerCase();
+  if (q) {
+    out = out.filter(f =>
+      (f.title || '').toLowerCase().includes(q) ||
+      (f.originalName || f.fileName || '').toLowerCase().includes(q) ||
+      (f.description || '').toLowerCase().includes(q)
+    );
+  }
+  const key = (sortVal || 'newest').toLowerCase();
+  const toMillis = (ts) => {
+    if (!ts) return 0;
+    if (typeof ts.toMillis === 'function') return ts.toMillis();
+    const t = new Date(ts).getTime();
+    return isNaN(t) ? 0 : t;
+  };
+  out.sort((a, b) => {
+    const ta = toMillis(a.createdAt);
+    const tb = toMillis(b.createdAt);
+    if (key === 'oldest') return ta - tb;
+    if (key === 'name_asc') return (a.title || a.originalName || '').localeCompare(b.title || b.originalName || '');
+    if (key === 'name_desc') return (b.title || b.originalName || '').localeCompare(a.title || a.originalName || '');
+    if (key === 'size_desc') return (b.fileSize || 0) - (a.fileSize || 0);
+    if (key === 'size_asc') return (a.fileSize || 0) - (b.fileSize || 0);
+    return tb - ta;
+  });
+  return out;
+}
+
+function describeFileType(file) {
+  const ext = (file.fileType || '').toLowerCase();
+  if (['ppt', 'pptx'].includes(ext)) return 'PowerPoint Presentation';
+  if (ext === 'pdf') return 'PDF Document';
+  if (['doc', 'docx'].includes(ext)) return 'Word Document';
+  if (['xls', 'xlsx'].includes(ext)) return 'Excel Spreadsheet';
+  if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) return 'Image';
+  if (ext === 'zip') return 'ZIP Archive';
+  if (ext === 'txt') return 'Text Document';
+  if (ext) return `${ext.toUpperCase()} File`;
+  return 'File';
+}
+
+function filePillStyle(ext) {
+  const e = String(ext || '').toUpperCase();
+  if (e === 'PDF') return 'background:rgba(239,68,68,0.12);color:#f87171;border:1px solid rgba(239,68,68,0.3);';
+  if (e === 'PPT' || e === 'PPTX') return 'background:rgba(245,158,11,0.12);color:#fbbf24;border:1px solid rgba(245,158,11,0.3);';
+  if (e === 'DOC' || e === 'DOCX') return 'background:rgba(59,130,246,0.12);color:#60a5fa;border:1px solid rgba(59,130,246,0.3);';
+  if (e === 'XLS' || e === 'XLSX') return 'background:rgba(16,185,129,0.12);color:#34d399;border:1px solid rgba(16,185,129,0.3);';
+  if (['JPG', 'JPEG', 'PNG', 'WEBP'].includes(e)) return 'background:rgba(139,92,246,0.12);color:#a78bfa;border:1px solid rgba(139,92,246,0.3);';
+  if (e === 'ZIP') return 'background:rgba(148,163,184,0.12);color:#94a3b8;border:1px solid rgba(148,163,184,0.3);';
+  return 'background:rgba(100,116,139,0.12);color:#94a3b8;border:1px solid rgba(100,116,139,0.3);';
+}
+
+function fileUploaderName(file) {
+  return file.uploadedByName || file.createdByName || file.instructorName || file.uploaderName || 'Instructor';
+}
+
+function getUploaderInitials(name) {
+  const clean = String(name || '').trim();
+  if (!clean) return 'IN';
+  const parts = clean.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+// Renders the "Uploaded By" avatar cell: a 28x28 circular photo when an
+// uploader image is available, otherwise (or on img error) an inline letter
+// initials circle (e.g. "RK") instead of a placeholder icon.
+function uploaderAvatarHtml(file, classroom) {
+  const esc = (v) => String(v === undefined || v === null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const avatar = sanitizeProfilePhotoUrl(
+    file.uploadedByPhotoURL ||
+    file.uploaderPhotoURL ||
+    file.uploaderAvatar ||
+    (classroom && classroom.teacherPhotoURL) ||
+    file.createdByPhotoURL ||
+    '',
+    file
+  );
+  const initials = getUploaderInitials(fileUploaderName(file));
+  const badgeCss = 'width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#4f46e5);color:#fff;align-items:center;justify-content:center;font-size:10px;font-weight:700;letter-spacing:0.5px;';
+  const badge = `<span style="display:inline-flex;${badgeCss}flex-shrink:0;">${initials}</span>`;
+  if (!avatar) return badge;
+  return `<span style="display:inline-flex;flex-shrink:0;">` +
+    `<img src="${esc(avatar)}" style="width:28px;height:28px;border-radius:50%;object-fit:cover;border:1px solid #334155;flex-shrink:0;min-width:28px;" alt="" onerror="this.style.display='none';const n=this.nextElementSibling;if(n){n.style.display='inline-flex';}" />` +
+    `<span style="display:none;${badgeCss}flex-shrink:0;">${initials}</span>` +
+    `</span>`;
+}
+
+function formatFileDate(ts) {
+  if (!ts) return '—';
+  let d;
+  if (typeof ts.toMillis === 'function') d = new Date(ts.toMillis());
+  else if (ts && typeof ts === 'object' && typeof ts.seconds === 'number') d = new Date(ts.seconds * 1000);
+  else d = new Date(ts);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
+function renderFilesTableRows(grid, pageFiles, classroomId, isTeacherUser, classroom) {
+  const esc = (v) => String(v === undefined || v === null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const tbody = document.createElement('tbody');
+  pageFiles.forEach((file, idx) => {
+    const { icon, color, label } = getFileIconAndColor(file.fileType, file.mimeType);
+    const downloadUrl = fileDownloadUrl(classroomId, file);
+    const isImg = ['jpg', 'jpeg', 'png', 'webp'].includes((file.fileType || '').toLowerCase()) || (file.mimeType || '').startsWith('image/');
+    const rawExt = (file.fileType || (file.originalName || '').split('.').pop() || '').replace(/^\./, '');
+    const pillText = rawExt.toUpperCase() || 'FILE';
+
+    const row = document.createElement('tr');
+    row.style.cssText = 'border-top:1px solid #1e293b; transition:background .15s;';
+    row.onmouseenter = () => { row.style.background = 'rgba(59,130,246,0.07)'; };
+    row.onmouseleave = () => { row.style.background = ''; };
+    row.__file = file;
+
+    const thumb = isImg
+      ? `<img src="${downloadUrl}" alt="${esc(file.title || '')}" style="width:38px;height:46px;border-radius:8px;object-fit:cover;border:1px solid #334155;background:#1e293b;flex-shrink:0;" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"/>
+         <div style="display:none;width:38px;height:46px;border-radius:8px;background:${color}22;border:1px solid ${color}40;color:${color};align-items:center;justify-content:center;flex-shrink:0;"><i class="material-icons" style="font-size:18px;">${icon}</i></div>`
+      : `<div style="width:38px;height:46px;border-radius:8px;background:${color}20;border:1px solid ${color}40;color:${color};display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="material-icons" style="font-size:18px;">${icon}</i></div>`;
+
+    const quickBtn = 'background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:#94a3b8;cursor:pointer;width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0;';
+    const menuBtn = 'width:100%;text-align:left;background:transparent;border:none;color:#e2e8f0;padding:8px 12px;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:8px;border-radius:6px;';
+
+    const lectureName = (file.lectureTitle && String(file.lectureTitle).trim())
+      ? file.lectureTitle
+      : (file.title || file.originalName || file.fileName || 'Untitled');
+    const subLine = `${file.originalName || file.fileName || 'File'} • ${describeFileType(file)}`;
+
+    row.innerHTML = `
+      <td style="width:32%; padding:12px 18px;">
+        <div style="display:flex;align-items:center;gap:12px;min-width:0;">
+          ${thumb}
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:14px;font-weight:600;color:#ffffff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;" title="${esc(lectureName)}">${esc(lectureName)}</div>
+            <div style="font-size:12px;color:#94a3b8;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;" title="${esc(subLine)}">${esc(subLine)}</div>
+          </div>
+        </div>
+      </td>
+      <td style="width:8%; padding:12px;"><span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:0.4px;white-space:nowrap;${filePillStyle(pillText)}">${esc(pillText)}</span></td>
+      <td style="width:24%; padding:12px;">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+          ${uploaderAvatarHtml(file, classroom)}
+          <span style="color:#cbd5e1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px;min-width:0;">${esc(fileUploaderName(file))}</span>
+        </div>
+      </td>
+      <td style="width:16%; padding:12px;color:#94a3b8;font-size:12px;white-space:nowrap;">${esc(formatFileDate(file.createdAt))}</td>
+      <td style="width:8%; padding:12px;color:#94a3b8;font-size:12px;white-space:nowrap;">${formatBytes(file.fileSize)}</td>
+      <td style="width:12%; padding:12px 16px; text-align:right;">
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;white-space:nowrap;position:relative;">
+          <button class="icon-btn-sm" data-files-action="view" title="View file" style="${quickBtn}"><i class="material-icons" style="font-size:16px;">visibility</i></button>
+          <button class="icon-btn-sm" data-files-action="download" title="Download file" style="${quickBtn}"><i class="material-icons" style="font-size:16px;">download</i></button>
+          ${isTeacherUser ? `
+          <div style="position:relative;flex-shrink:0;">
+            <button class="icon-btn-sm btn-kebab-menu" data-files-action="kebab" title="More actions" style="${quickBtn}"><i class="material-icons" style="font-size:16px;">more_vert</i></button>
+            <div class="kebab-dropdown-menu" style="display:none;position:absolute;right:0;top:32px;background:#0f172a;border:1px solid #334155;border-radius:10px;box-shadow:0 10px 25px rgba(0,0,0,0.5);z-index:120;min-width:170px;overflow:hidden;padding:4px;">
+              <button class="btn-open-file" data-files-action="view" style="${menuBtn}"><span style="font-size:13px;">👁️</span> View File</button>
+              <button class="btn-edit-file" data-files-action="edit" style="${menuBtn}"><span style="font-size:13px;">✏️</span> Edit Lecture / Title</button>
+              <button class="btn-download-file" data-files-action="download" style="${menuBtn}"><span style="font-size:13px;">⬇️</span> Download</button>
+              <button class="btn-delete-file" data-files-action="delete" style="${menuBtn};color:#ef4444;"><span style="font-size:13px;">🗑️</span> Delete File</button>
+            </div>
+          </div>` : ''}
+        </div>
+      </td>`;
+
+    tbody.appendChild(row);
+  });
+  return tbody;
+}
+
+function closeFilesKebabs() {
+  document.querySelectorAll('.kebab-dropdown-menu').forEach(m => m.style.display = 'none');
+}
+
+// Close any open file or announcement kebab menu when clicking elsewhere on the page.
+if (!window.__filesKebabOutsideBound) {
+  window.__filesKebabOutsideBound = true;
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.btn-kebab-menu') && !e.target.closest('.kebab-dropdown-menu')) {
+      closeFilesKebabs();
+    }
+    if (!e.target.closest('.kebab-trigger') && !e.target.closest('.kebab-dropdown')) {
+      document.querySelectorAll('.kebab-dropdown').forEach(d => d.classList.add('hidden'));
+    }
+  });
+}
+
+function filesPageButtons(totalPages, page) {
+  const btns = [];
+  const max = 5;
+  let start = Math.max(1, page - Math.floor(max / 2));
+  let end = Math.min(totalPages, start + max - 1);
+  start = Math.max(1, end - max + 1);
+  const base = 'min-width:30px;height:30px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .15s;';
+  const normal = `background:rgba(255,255,255,0.05);border:1px solid #1e293b;color:#94a3b8;${base}`;
+  const activeStyle = `background:linear-gradient(135deg,#2563eb,#4f46e5);border:1px solid transparent;color:#fff;${base}`;
+  for (let p = start; p <= end; p++) {
+    btns.push(`<button class="files-page-btn" data-page="${p}" style="${p === page ? activeStyle : normal}">${p}</button>`);
+  }
+  return btns.join('');
+}
+
+export async function fetchAndRenderClassroomFiles(classroomId, preloadedFiles = null, silent = false) {
   const grid = document.getElementById('classroom-files-grid');
   const uploadBtn = document.getElementById('btn-upload-classroom-file');
   if (!grid || !classroomId) return;
@@ -7489,82 +8502,112 @@ export async function fetchAndRenderClassroomFiles(classroomId) {
 
   const cacheKey = `openclass_files_${classroomId}`;
 
-  grid.innerHTML = '<div class="empty-state-sm" style="text-align:center; padding:60px 0; color:var(--text-muted); grid-column:1/-1;"><i class="material-icons rotating" style="font-size:32px; display:block; margin-bottom:8px;">sync</i> Loading files & resources...</div>';
-
   let files = null;
   let isCachedData = false;
 
-  // 1. Try Express API
-  try {
-    const url = `/api/classrooms/${classroomId}/files?q=${encodeURIComponent(searchVal)}&category=${encodeURIComponent(categoryVal)}&sort=${encodeURIComponent(sortVal)}`;
-    files = await fetchWithAuth(url);
-    if (Array.isArray(files) && files.length > 0) {
-      classroomFilesCache = files;
-      try { localStorage.setItem(cacheKey, JSON.stringify(files)); } catch (e) {}
-    } else {
-      files = null;
+  if (Array.isArray(preloadedFiles)) {
+    // Real-time snapshot path: use the already-fetched list, no network round-trip
+    files = preloadedFiles;
+  } else {
+    if (!silent) {
+      grid.innerHTML = '<div class="empty-state-sm" style="text-align:center; padding:60px 0; color:var(--text-muted); grid-column:1/-1;"><i class="material-icons rotating" style="font-size:32px; display:block; margin-bottom:8px;">sync</i> Loading files & resources...</div>';
     }
-  } catch (err) {
-    console.warn('[ClassroomFiles] API fetch warning, attempting Firestore & Cache fallback:', err);
-  }
 
-  // 2. Firestore Direct Query Fallback
-  if (!files || !Array.isArray(files) || files.length === 0) {
+    // 1. Try Express API
     try {
-      const db = getFirestore();
-      const filesSnap = await getDocs(collection(db, 'classrooms', classroomId, 'files'));
-      if (!filesSnap.empty) {
-        files = filesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const url = `/api/classrooms/${classroomId}/files?q=${encodeURIComponent(searchVal)}&category=${encodeURIComponent(categoryVal)}&sort=${encodeURIComponent(sortVal)}`;
+      files = await fetchWithAuth(url);
+      if (Array.isArray(files) && files.length > 0) {
+        classroomFilesCache = files;
         try { localStorage.setItem(cacheKey, JSON.stringify(files)); } catch (e) {}
+      } else {
+        files = null;
       }
-    } catch (fsErr) {
-      console.warn('[ClassroomFiles] Firestore query warning:', fsErr);
+    } catch (err) {
+      console.warn('[ClassroomFiles] API fetch warning, attempting Firestore & Cache fallback:', err);
+    }
+
+    // 2. Firestore Direct Query Fallback
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      try {
+        const db = getFirestore();
+        const filesSnap = await getDocs(collection(db, 'classrooms', classroomId, 'files'));
+        if (!filesSnap.empty) {
+          files = filesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+          try { localStorage.setItem(cacheKey, JSON.stringify(files)); } catch (e) {}
+        }
+      } catch (fsErr) {
+        console.warn('[ClassroomFiles] Firestore query warning:', fsErr);
+      }
+    }
+
+    // 3. LocalStorage Cache Fallback
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      try {
+        const stored = localStorage.getItem(cacheKey);
+        if (stored) {
+          files = JSON.parse(stored);
+          isCachedData = true;
+        }
+      } catch (e) {}
+    }
+
+    // 4. Global LocalStorage Manifest Fallback across all sessions/classrooms
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      try {
+        const allKeys = Object.keys(localStorage).filter(k => k.startsWith('openclass_files_'));
+        const combinedMap = new Map();
+        allKeys.forEach(k => {
+          try {
+            const list = JSON.parse(localStorage.getItem(k) || '[]');
+            if (Array.isArray(list)) list.forEach(f => combinedMap.set(f.id || f.fileId, f));
+          } catch (e) {}
+        });
+        if (combinedMap.size > 0) {
+          files = Array.from(combinedMap.values());
+          isCachedData = true;
+        }
+      } catch (e) {}
     }
   }
 
-  // 3. LocalStorage Cache Fallback
-  if (!files || !Array.isArray(files) || files.length === 0) {
-    try {
-      const stored = localStorage.getItem(cacheKey);
-      if (stored) {
-        files = JSON.parse(stored);
-        isCachedData = true;
-      }
-    } catch (e) {}
-  }
+  const rawCount = Array.isArray(files) ? files.length : 0;
+  files = sortAndFilterFiles(files, searchVal, categoryVal, sortVal);
 
-  // 4. Global LocalStorage Manifest Fallback across all sessions/classrooms
-  if (!files || !Array.isArray(files) || files.length === 0) {
-    try {
-      const allKeys = Object.keys(localStorage).filter(k => k.startsWith('openclass_files_'));
-      const combinedMap = new Map();
-      allKeys.forEach(k => {
-        try {
-          const list = JSON.parse(localStorage.getItem(k) || '[]');
-          if (Array.isArray(list)) list.forEach(f => combinedMap.set(f.id || f.fileId, f));
-        } catch (e) {}
-      });
-      if (combinedMap.size > 0) {
-        files = Array.from(combinedMap.values());
-        isCachedData = true;
-      }
-    } catch (e) {}
+  // Reset to page 1 when search/filter/sort inputs change; keep the page on
+  // realtime snapshot refreshes so the user stays where they were.
+  if (searchVal !== filesTableState.search || categoryVal !== filesTableState.category || sortVal !== filesTableState.sort) {
+    filesTableState.page = 1;
   }
+  filesTableState.search = searchVal;
+  filesTableState.category = categoryVal;
+  filesTableState.sort = sortVal;
 
   if (!files || files.length === 0) {
     const emptyText = isFileOwner
       ? 'No files uploaded yet. Upload your first classroom resource.'
       : 'Your teacher has not uploaded any files yet.';
-    grid.innerHTML = `
-      <div class="empty-state-sm" style="text-align:center; padding:60px 20px; color:var(--text-muted); grid-column:1/-1;">
-        <div style="width:64px; height:64px; border-radius:50%; background:rgba(59,130,246,0.1); color:var(--primary); display:flex; align-items:center; justify-content:center; margin:0 auto 16px auto; font-size:32px;">
-          <i class="material-icons" style="font-size:36px;">folder_open</i>
-        </div>
-        <h3 style="margin:0 0 6px 0; font-size:16px; color:var(--text-main);">📁 No files yet</h3>
-        <p style="font-size:13px; color:var(--text-muted); margin:0;">${emptyText}</p>
-      </div>`;
+    if (rawCount > 0) {
+      grid.innerHTML = '<div class="empty-state-sm" style="text-align:center; padding:60px 20px; color:var(--text-muted); grid-column:1/-1;"><i class="material-icons" style="font-size:36px; color:var(--primary);">search_off</i><h3 style="margin:12px 0 6px 0; font-size:16px; color:var(--text-main);">No files match</h3><p style="font-size:13px; color:var(--text-muted); margin:0;">Try adjusting your search or filters.</p></div>';
+    } else {
+      grid.innerHTML = `
+        <div class="empty-state-sm" style="text-align:center; padding:60px 20px; color:var(--text-muted); grid-column:1/-1;">
+          <div style="width:64px; height:64px; border-radius:50%; background:rgba(59,130,246,0.1); color:var(--primary); display:flex; align-items:center; justify-content:center; margin:0 auto 16px auto; font-size:32px;">
+            <i class="material-icons" style="font-size:36px;">folder_open</i>
+          </div>
+          <h3 style="margin:0 0 6px 0; font-size:16px; color:var(--text-main);">📁 No files yet</h3>
+          <p style="font-size:13px; color:var(--text-muted); margin:0;">${emptyText}</p>
+        </div>`;
+    }
     return;
   }
+
+  const perPage = Number(filesTableState.perPage) || 12;
+  const totalPages = Math.max(1, Math.ceil(files.length / perPage));
+  filesTableState.page = Math.min(Math.max(1, filesTableState.page || 1), totalPages);
+  const pageFiles = files.slice((filesTableState.page - 1) * perPage, filesTableState.page * perPage);
+  const shownStart = ((filesTableState.page - 1) * perPage) + 1;
+  const shownEnd = Math.min(filesTableState.page * perPage, files.length);
 
   grid.innerHTML = '';
 
@@ -7581,110 +8624,87 @@ export async function fetchAndRenderClassroomFiles(classroomId) {
     grid.appendChild(cacheBanner);
   }
 
-  files.forEach(file => {
-    const { icon, color, label } = getFileIconAndColor(file.fileType, file.mimeType);
-    const downloadUrl = fileDownloadUrl(classroomId, file);
-    const isImg = ['jpg', 'jpeg', 'png', 'webp'].includes((file.fileType || '').toLowerCase()) || (file.mimeType || '').startsWith('image/');
-    const fileDate = file.createdAt ? new Date(file.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recently';
+  // ── Modern Table / List View ──
+  const tableWrap = document.createElement('div');
+  tableWrap.style.cssText = 'width:100%; background:rgba(15,23,42,0.6); border:1px solid #1e293b; border-radius:16px; overflow:visible;';
 
-    const card = document.createElement('div');
-    card.className = 'activity-card animate-fade';
-    card.style.cssText = 'background:#0f172a; border:1px solid #1e293b; border-radius:16px; padding:14px; display:flex; flex-direction:column; justify-content:space-between; gap:12px; position:relative; box-shadow:0 4px 16px rgba(0,0,0,0.25); transition:all 0.2s ease; cursor:pointer;';
-    card.onmouseenter = () => { card.style.borderColor = '#3b82f6'; card.style.transform = 'translateY(-2px)'; card.style.boxShadow = '0 8px 24px rgba(0,0,0,0.35)'; };
-    card.onmouseleave = () => { card.style.borderColor = '#1e293b'; card.style.transform = 'none'; card.style.boxShadow = '0 4px 16px rgba(0,0,0,0.25)'; };
+  const table = document.createElement('table');
+  table.style.cssText = 'width:100%; table-layout:fixed; text-align:left; border-collapse:collapse; font-size:13px; color:#e2e8f0;';
+  table.innerHTML = `
+    <thead>
+      <tr style="background:#111c33; color:#94a3b8; text-transform:uppercase; font-size:11px; letter-spacing:0.6px;">
+        <th style="text-align:left; width:32%; padding:14px 18px; font-weight:600;">File Name</th>
+        <th style="text-align:left; width:8%; padding:14px 12px; font-weight:600;">Type</th>
+        <th style="text-align:left; width:24%; padding:14px 12px; font-weight:600;">Uploaded By</th>
+        <th style="text-align:left; width:16%; padding:14px 12px; font-weight:600;">Uploaded On</th>
+        <th style="text-align:left; width:8%; padding:14px 12px; font-weight:600;">Size</th>
+        <th style="text-align:right; width:12%; padding:14px 16px; font-weight:600;">Actions</th>
+      </tr>
+    </thead>`;
 
-    let previewHtml = '';
-    if (isImg) {
-      previewHtml = `
-        <div style="height:140px; border-radius:10px; overflow:hidden; position:relative; background:#1e293b; display:flex; align-items:center; justify-content:center;">
-          <img src="${downloadUrl}" alt="${file.title || 'Preview'}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
-          <div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; background:linear-gradient(135deg, ${color}20, #0f172a); color:${color};">
-            <i class="material-icons" style="font-size:48px;">${icon}</i>
-          </div>
-          <span style="position:absolute; bottom:8px; left:8px; background:${color}; color:#ffffff; font-weight:700; font-size:10px; padding:3px 8px; border-radius:6px; letter-spacing:0.5px; box-shadow:0 2px 8px rgba(0,0,0,0.4); z-index:2;">${label} &bull; ${formatBytes(file.fileSize)}</span>
-        </div>`;
-    } else {
-      previewHtml = `
-        <div style="height:140px; border-radius:10px; overflow:hidden; position:relative; background:linear-gradient(135deg, ${color}18 0%, #0f172a 100%); border:1px solid ${color}25; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px;">
-          <div style="width:52px; height:52px; border-radius:14px; background:${color}20; border:1px solid ${color}35; color:${color}; display:flex; align-items:center; justify-content:center; box-shadow:0 0 20px ${color}20;">
-            <i class="material-icons" style="font-size:30px;">${icon}</i>
-          </div>
-          <span style="font-size:11px; font-weight:600; color:#94a3b8; text-transform:uppercase; letter-spacing:1px;">Document Preview</span>
-          <span style="position:absolute; bottom:8px; left:8px; background:${color}; color:#ffffff; font-weight:700; font-size:10px; padding:3px 8px; border-radius:6px; letter-spacing:0.5px; box-shadow:0 2px 8px rgba(0,0,0,0.4); z-index:2;">${label} &bull; ${formatBytes(file.fileSize)}</span>
-        </div>`;
-    }
+  table.appendChild(renderFilesTableRows(grid, pageFiles, classroomId, isTeacherUser, window._currentDetailClassroom));
+  tableWrap.appendChild(table);
+  grid.appendChild(tableWrap);
 
-    card.innerHTML = `
-      <!-- Card Top: Single-Line Title & 3-Dots Menu -->
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
-        <h4 style="margin:0; font-size:14px; font-weight:600; color:#f8fafc; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; flex:1; min-width:0;" title="${file.title || file.originalName}">${file.title || file.originalName}</h4>
-        
-        <div style="position:relative; flex-shrink:0;">
-          <button class="icon-btn-sm btn-kebab-menu" title="Actions" style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:#94a3b8; cursor:pointer; width:30px; height:30px; border-radius:8px; display:flex; align-items:center; justify-content:center; transition:all 0.2s;">
-            <i class="material-icons" style="font-size:18px;">more_vert</i>
-          </button>
-          
-          <!-- 3-Dots Dropdown with EXACT 3 Actions: View, Download, Edit -->
-          <div class="kebab-dropdown-menu" style="display:none; position:absolute; right:0; top:34px; background:#0f172a; border:1px solid #334155; border-radius:10px; box-shadow:0 10px 25px rgba(0,0,0,0.5); z-index:100; min-width:130px; overflow:hidden; padding:4px;">
-            <button class="btn-open-file" style="width:100%; text-align:left; background:transparent; border:none; color:#f8fafc; padding:8px 12px; font-size:12px; font-weight:500; cursor:pointer; display:flex; align-items:center; gap:8px; border-radius:6px;">
-              <i class="material-icons" style="font-size:15px; color:#3b82f6;">visibility</i> View
-            </button>
-            <button class="btn-download-file" style="width:100%; text-align:left; background:transparent; border:none; color:#f8fafc; padding:8px 12px; font-size:12px; font-weight:500; cursor:pointer; display:flex; align-items:center; gap:8px; border-radius:6px;">
-              <i class="material-icons" style="font-size:15px; color:#10b981;">download</i> Download
-            </button>
-            <button class="btn-edit-file" style="width:100%; text-align:left; background:transparent; border:none; color:#f8fafc; padding:8px 12px; font-size:12px; font-weight:500; cursor:pointer; display:flex; align-items:center; gap:8px; border-radius:6px;">
-              <i class="material-icons" style="font-size:15px; color:#f59e0b;">edit</i> Edit
-            </button>
-          </div>
-        </div>
-      </div>
+  // ── Pagination Footer ──
+  const footer = document.createElement('div');
+  footer.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-top:16px; padding:12px 4px; font-size:12px; color:#94a3b8;';
+  const pageBtnBase = 'min-width:30px;height:30px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border:1px solid #1e293b;background:rgba(255,255,255,0.05);color:#94a3b8;transition:all .15s;';
+  const pageBtnDisabled = `${pageBtnBase}opacity:0.35;cursor:not-allowed;`;
+  const canPrev = filesTableState.page > 1;
+  const canNext = filesTableState.page < totalPages;
+  footer.innerHTML = `
+    <div><span>Showing <b style="color:#e2e8f0;">${shownStart} to ${shownEnd}</b> of <b style="color:#e2e8f0;">${files.length}</b> files</span></div>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <button class="files-page-btn" data-page="prev" ${canPrev ? '' : 'disabled'} style="${canPrev ? pageBtnBase : pageBtnDisabled}" title="Previous page">‹</button>
+      ${filesPageButtons(totalPages, filesTableState.page)}
+      <button class="files-page-btn" data-page="next" ${canNext ? '' : 'disabled'} style="${canNext ? pageBtnBase : pageBtnDisabled}" title="Next page">›</button>
+      <select id="files-page-size" style="background:#0f172a;border:1px solid #334155;color:#cbd5e1;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;">
+        ${[6, 12, 24, 48].map(n => `<option value="${n}" ${n === perPage ? 'selected' : ''}>${n} per page</option>`).join('')}
+      </select>
+    </div>`;
+  grid.appendChild(footer);
 
-      <!-- Card Middle: Visual First-Page/Cover Thumbnail -->
-      ${previewHtml}
-    `;
-
-    // Click card thumbnail area opens file
-    card.onclick = (e) => {
-      if (!e.target.closest('.btn-kebab-menu') && !e.target.closest('.kebab-dropdown-menu')) {
-        openClassroomFile(classroomId, file);
+  // Row-action delegation (View / Download / Edit / Delete / kebab toggle)
+  grid.onclick = (e) => {
+    const tr = e.target.closest('tr');
+    const file = tr && tr.__file;
+    if (!file) return;
+    const btn = e.target.closest('[data-files-action]');
+    if (!btn) return;
+    const action = btn.getAttribute('data-files-action');
+    if (action === 'view') { closeFilesKebabs(); openClassroomFile(classroomId, file); }
+    else if (action === 'download') { closeFilesKebabs(); downloadClassroomFile(classroomId, file); }
+    else if (action === 'edit') { closeFilesKebabs(); editClassroomFile(classroomId, file); }
+    else if (action === 'delete') { closeFilesKebabs(); deleteClassroomFile(classroomId, file); }
+    else if (action === 'kebab') {
+      e.stopPropagation();
+      const menu = btn.parentElement.querySelector('.kebab-dropdown-menu');
+      if (menu) {
+        document.querySelectorAll('.kebab-dropdown-menu').forEach(m => { if (m !== menu) m.style.display = 'none'; });
+        menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
       }
-    };
-
-    // 3-Dots Actions
-    const kebabBtn = card.querySelector('.btn-kebab-menu');
-    const menu = card.querySelector('.kebab-dropdown-menu');
-    if (kebabBtn && menu) {
-      kebabBtn.onclick = (e) => {
-        e.stopPropagation();
-        const isShown = menu.style.display === 'block';
-        document.querySelectorAll('.kebab-dropdown-menu').forEach(m => m.style.display = 'none');
-        menu.style.display = isShown ? 'none' : 'block';
-      };
     }
+  };
 
-    const viewBtn = card.querySelector('.btn-open-file');
-    if (viewBtn) viewBtn.onclick = (e) => {
-      e.stopPropagation();
-      if (menu) menu.style.display = 'none';
-      openClassroomFile(classroomId, file);
+  // Pagination controls
+  footer.onclick = (e) => {
+    const b = e.target.closest('.files-page-btn');
+    if (!b) return;
+    const val = b.getAttribute('data-page');
+    if (val === 'prev') filesTableState.page = Math.max(1, filesTableState.page - 1);
+    else if (val === 'next') filesTableState.page = Math.min(totalPages, filesTableState.page + 1);
+    else filesTableState.page = Number(val);
+    fetchAndRenderClassroomFiles(classroomId, classroomFilesCache, true);
+  };
+  const pageSizeSel = footer.querySelector('#files-page-size');
+  if (pageSizeSel) {
+    pageSizeSel.onchange = () => {
+      filesTableState.perPage = Number(pageSizeSel.value) || 12;
+      filesTableState.page = 1;
+      fetchAndRenderClassroomFiles(classroomId, classroomFilesCache, true);
     };
-
-    const dlBtn = card.querySelector('.btn-download-file');
-    if (dlBtn) dlBtn.onclick = (e) => {
-      e.stopPropagation();
-      if (menu) menu.style.display = 'none';
-      downloadClassroomFile(classroomId, file);
-    };
-
-    const editBtn = card.querySelector('.btn-edit-file');
-    if (editBtn) editBtn.onclick = (e) => {
-      e.stopPropagation();
-      if (menu) menu.style.display = 'none';
-      editClassroomFile(classroomId, file);
-    };
-
-    grid.appendChild(card);
-  });
+  }
 }
 
 function fileDownloadUrl(classroomId, file) {
@@ -7733,21 +8753,28 @@ async function downloadClassroomFile(classroomId, file) {
 }
 
 async function editClassroomFile(classroomId, file) {
-  const newTitle = prompt('Edit file title:', file.title || file.originalName);
-  if (newTitle === null) return;
-  const newDesc = prompt('Edit file description:', file.description || '');
-  if (newDesc === null) return;
+  editingClassroomFileId = file.id || file.fileId;
+  editingClassroomFileClassroomId = classroomId;
 
-  try {
-    await fetchWithAuth(`/api/classrooms/${classroomId}/files/${file.id || file.fileId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: newTitle, description: newDesc })
-    });
-    showAppToast('File updated successfully.', 'success');
-    fetchAndRenderClassroomFiles(classroomId);
-  } catch (err) {
-    alert('Failed to update file: ' + describeApiError(err));
+  const lectureEl = document.getElementById('edit-lecture-title');
+  const titleEl = document.getElementById('edit-file-title');
+  const descEl = document.getElementById('edit-file-desc');
+  const catEl = document.getElementById('edit-file-category');
+  const alertEl = document.getElementById('classroom-file-edit-alert');
+
+  if (lectureEl) lectureEl.value = file.lectureTitle || file.title || file.originalName || '';
+  if (titleEl) titleEl.value = (file.lectureTitle && file.title && String(file.title).trim() !== String(file.lectureTitle).trim()) ? file.title : '';
+  if (descEl) descEl.value = file.description || '';
+  if (catEl) {
+    const cats = Array.from(catEl.options).map(o => o.value.toLowerCase());
+    catEl.value = cats.includes(String(file.category || '').toLowerCase()) ? file.category : 'Other';
+  }
+  if (alertEl) alertEl.style.display = 'none';
+
+  const modal = document.getElementById('modal-classroom-file-edit');
+  if (modal) {
+    modal.style.zIndex = '1000000';
+    modal.style.display = 'flex';
   }
 }
 
@@ -7803,9 +8830,15 @@ export function initClassroomFilesModule() {
         const ext = selected.name.split('.').pop().toLowerCase();
         const catSelect = document.getElementById('classroom-file-category');
         const titleInput = document.getElementById('classroom-file-title');
+        const lectureInput = document.getElementById('upload-lecture-title');
+        const fileStem = selected.name.replace(/\.[^/.]+$/, '');
+
+        if (lectureInput && (!lectureInput.value || lectureInput.value.trim() === '')) {
+          lectureInput.value = fileStem;
+        }
 
         if (titleInput && (!titleInput.value || titleInput.value.trim() === '')) {
-          titleInput.value = selected.name.replace(/\.[^/.]+$/, '');
+          titleInput.value = fileStem;
         }
 
         if (catSelect) {
@@ -7867,9 +8900,18 @@ export function initClassroomFilesModule() {
       }
 
       const file = fileInput.files[0];
+      const lectureTitle = (document.getElementById('upload-lecture-title')?.value || '').trim();
       const MAX_SIZE = 50 * 1024 * 1024; // 50MB
       const ext = file.name.split('.').pop().toLowerCase();
       const ALLOWED = new Set(['pdf', 'ppt', 'pptx', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'jpg', 'jpeg', 'png', 'webp', 'zip']);
+
+      if (!lectureTitle) {
+        if (alertEl) {
+          alertEl.textContent = 'Please enter a Lecture Number / Topic.';
+          alertEl.style.display = 'block';
+        }
+        return;
+      }
 
       if (!ALLOWED.has(ext)) {
         if (alertEl) {
@@ -7915,16 +8957,20 @@ export function initClassroomFilesModule() {
         if (progressBar) progressBar.style.width = '80%';
         if (progressPercent) progressPercent.textContent = '80%';
 
-        const title = document.getElementById('classroom-file-title')?.value || file.name;
+        const title = lectureTitle || file.name;
         const description = document.getElementById('classroom-file-desc')?.value || '';
         const category = document.getElementById('classroom-file-category')?.value || 'Other';
+        const uploaderPhotoURL = (currentUserProfile && (currentUserProfile.photoURL || currentUserProfile.picture)) || getAuth().currentUser?.photoURL || '';
 
         const payload = {
           fileName: file.name,
           originalName: file.name,
+          originalFileName: file.name,
+          lectureTitle,
           title,
           description,
           category,
+          uploaderPhotoURL,
           fileData: base64Data,
           fileType: ext,
           mimeType: file.type || 'application/octet-stream',
@@ -8004,6 +9050,47 @@ export function initClassroomFilesModule() {
         }
       });
     }
+  }
+
+  // Edit File Form Submit
+  const formEdit = document.getElementById('form-classroom-file-edit');
+  if (formEdit) {
+    formEdit.onsubmit = async (e) => {
+      e.preventDefault();
+      const alertEl = document.getElementById('classroom-file-edit-alert');
+      const lectureTitle = (document.getElementById('edit-lecture-title')?.value || '').trim();
+      const cid = editingClassroomFileClassroomId;
+      const fid = editingClassroomFileId;
+
+      if (!lectureTitle) {
+        if (alertEl) { alertEl.textContent = 'Please enter a Lecture Number / Topic.'; alertEl.style.display = 'block'; }
+        return;
+      }
+      if (!cid || !fid) return;
+
+      const title = document.getElementById('edit-file-title')?.value || '';
+      const description = document.getElementById('edit-file-desc')?.value || '';
+      const category = document.getElementById('edit-file-category')?.value || 'Other';
+
+      try {
+        await fetchWithAuth(`/api/classrooms/${cid}/files/${fid}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lectureTitle, title, description, category })
+        });
+        showAppToast('File updated successfully.', 'success');
+        const modal = document.getElementById('modal-classroom-file-edit');
+        if (modal) modal.style.display = 'none';
+        editingClassroomFileId = null;
+        editingClassroomFileClassroomId = null;
+        fetchAndRenderClassroomFiles(cid);
+      } catch (err) {
+        if (alertEl) {
+          alertEl.textContent = '❌ Failed to update file: ' + describeApiError(err);
+          alertEl.style.display = 'block';
+        }
+      }
+    };
   }
 }
 

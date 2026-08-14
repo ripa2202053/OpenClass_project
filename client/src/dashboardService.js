@@ -10,6 +10,8 @@ import {
   onSnapshot,
   serverTimestamp,
   addDoc,
+  updateDoc,
+  deleteDoc,
   limit,
 } from 'firebase/firestore';
 import { fetchWithAuth } from './utils/api.js';
@@ -268,9 +270,23 @@ export async function addActivity(classroomId, type, description, user) {
 
 const activeNoticeListeners = new Map();
 
-export async function addNotice(classroomId, title, content, user) {
+// Re-deliver the current merged notice list to every active listener for a
+// classroom (used after optimistic local writes / edits / deletes).
+function notifyNoticeListeners(classroomId) {
+  const cacheKey = `openclass_notices_${classroomId}`;
+  const listeners = activeNoticeListeners.get(classroomId) || [];
+  listeners.forEach(cb => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+      cb(stored);
+    } catch (e) {}
+  });
+}
+
+export async function addNotice(classroomId, title, content, user, opts = {}) {
   if (!classroomId) return;
 
+  const { attachments = [], pinned = false } = opts;
   const newNotice = {
     id: `notice_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     classroomId,
@@ -279,6 +295,8 @@ export async function addNotice(classroomId, title, content, user) {
     createdBy: user?.uid || 'teacher',
     createdByName: user?.displayName || user?.name || 'Teacher',
     createdAt: new Date().toISOString(),
+    pinned: !!pinned,
+    attachments: Array.isArray(attachments) ? attachments.slice(0, 10) : [],
   };
 
   // 1. Immediately save to LocalStorage for instant local & offline rendering
@@ -295,24 +313,54 @@ export async function addNotice(classroomId, title, content, user) {
   } catch (e) {}
 
   // 2. Trigger active notice listeners synchronously
-  const listeners = activeNoticeListeners.get(classroomId) || [];
-  listeners.forEach(cb => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(cacheKey) || '[]');
-      cb(stored);
-    } catch (e) {}
-  });
+  notifyNoticeListeners(classroomId);
 
-  // 3. Best-effort write to Firestore
+  // 3. Best-effort write to Firestore (prefers the server announcement endpoint,
+  //    which also pushes the course stream card + per-student notifications).
   const db = getFirestore();
   try {
-    await addDoc(collection(db, 'classrooms', classroomId, 'notices'), {
-      title: newNotice.title,
-      content: newNotice.content,
-      createdBy: newNotice.createdBy,
-      createdByName: newNotice.createdByName,
-      createdAt: serverTimestamp(),
-    });
+    let syncedId = null;
+    try {
+      const serverRes = await fetchWithAuth(`/api/classrooms/${classroomId}/announcements`, {
+        method: 'POST',
+        body: JSON.stringify({
+          title: newNotice.title,
+          content: newNotice.content,
+          pinned: newNotice.pinned,
+          attachments: newNotice.attachments,
+        }),
+      });
+      if (serverRes && serverRes.id) syncedId = serverRes.id;
+    } catch (serverErr) {
+      console.warn('[dashboardService] Server announcement endpoint unavailable, falling back to direct Firestore write:', serverErr.message);
+      syncedId = null;
+    }
+
+    if (!syncedId) {
+      const docRef = await addDoc(collection(db, 'classrooms', classroomId, 'notices'), {
+        title: newNotice.title,
+        content: newNotice.content,
+        createdBy: newNotice.createdBy,
+        createdByName: newNotice.createdByName,
+        pinned: newNotice.pinned,
+        attachments: newNotice.attachments,
+        createdAt: serverTimestamp(),
+      });
+      syncedId = docRef && docRef.id;
+    }
+
+    // Re-key the local entry with the Firestore doc id so the snapshot merge dedupes it
+    if (syncedId) {
+      const synced = { ...newNotice, id: syncedId };
+      try {
+        const cacheKey = `openclass_notices_${classroomId}`;
+        const globalCacheKey = 'openclass_global_notices';
+        const perClass = JSON.parse(localStorage.getItem(cacheKey) || '[]').map(n => (n.id === newNotice.id ? synced : n));
+        localStorage.setItem(cacheKey, JSON.stringify(perClass));
+        const global = JSON.parse(localStorage.getItem(globalCacheKey) || '[]').map(n => (n.id === newNotice.id ? synced : n));
+        localStorage.setItem(globalCacheKey, JSON.stringify(global));
+      } catch (e) {}
+    }
   } catch (e) {
     if (isQuotaExceededError(e)) {
       console.warn('Could not add notice to Firestore (quota exceeded, preserved in LocalStorage):', e.message);
@@ -322,6 +370,70 @@ export async function addNotice(classroomId, title, content, user) {
   }
 
   return newNotice;
+}
+
+// Update an existing notice (edit content, pin/unpin). Mirrors the change into
+// LocalStorage caches so offline/quota-degraded views stay in sync too.
+export async function updateNotice(classroomId, noticeId, updates = {}) {
+  if (!classroomId || !noticeId) return null;
+  const db = getFirestore();
+  const patch = {};
+  if (typeof updates.title === 'string') patch.title = updates.title;
+  if (typeof updates.content === 'string') patch.content = updates.content;
+  if (Array.isArray(updates.attachments)) patch.attachments = updates.attachments.slice(0, 10);
+  if (typeof updates.pinned === 'boolean') {
+    patch.pinned = updates.pinned;
+    patch.pinnedAt = serverTimestamp();
+  }
+  if (Object.keys(patch).length === 0) return null;
+
+  try {
+    await updateDoc(doc(db, 'classrooms', classroomId, 'notices', noticeId), patch);
+  } catch (e) {
+    if (isQuotaExceededError(e)) {
+      console.warn('Could not update notice (quota exceeded, preserved in LocalStorage):', e.message);
+    } else {
+      console.warn('Could not update notice:', e);
+    }
+  }
+
+  // Mirror into LocalStorage caches so the optimistic render reflects the change.
+  try {
+    const cacheKey = `openclass_notices_${classroomId}`;
+    const globalCacheKey = 'openclass_global_notices';
+    const perClass = JSON.parse(localStorage.getItem(cacheKey) || '[]').map(n => (n.id === noticeId ? { ...n, ...patch } : n));
+    localStorage.setItem(cacheKey, JSON.stringify(perClass));
+    const global = JSON.parse(localStorage.getItem(globalCacheKey) || '[]').map(n => (n.id === noticeId ? { ...n, ...patch } : n));
+    localStorage.setItem(globalCacheKey, JSON.stringify(global));
+  } catch (e) {}
+
+  notifyNoticeListeners(classroomId);
+  return { id: noticeId, ...patch };
+}
+
+export async function deleteNotice(classroomId, noticeId) {
+  if (!classroomId || !noticeId) return;
+  const db = getFirestore();
+  try {
+    await deleteDoc(doc(db, 'classrooms', classroomId, 'notices', noticeId));
+  } catch (e) {
+    if (isQuotaExceededError(e)) {
+      console.warn('Could not delete notice (quota exceeded, removed from LocalStorage):', e.message);
+    } else {
+      console.warn('Could not delete notice:', e);
+    }
+  }
+
+  try {
+    const cacheKey = `openclass_notices_${classroomId}`;
+    const globalCacheKey = 'openclass_global_notices';
+    const perClass = JSON.parse(localStorage.getItem(cacheKey) || '[]').filter(n => n.id !== noticeId);
+    localStorage.setItem(cacheKey, JSON.stringify(perClass));
+    const global = JSON.parse(localStorage.getItem(globalCacheKey) || '[]').filter(n => n.id !== noticeId);
+    localStorage.setItem(globalCacheKey, JSON.stringify(global));
+  } catch (e) {}
+
+  notifyNoticeListeners(classroomId);
 }
 
 export function subscribeNotices(classroomId, callback) {
@@ -363,13 +475,28 @@ export function subscribeNotices(classroomId, callback) {
     } catch (e) {}
 
     const finalList = Array.from(noticeMap.values()).sort((a, b) => {
+      // Pinned posts float to the top, then newest-first.
+      const pa = a.pinned === true ? 1 : 0;
+      const pb = b.pinned === true ? 1 : 0;
+      if (pa !== pb) return pb - pa;
       const ta = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : new Date(a.createdAt || 0).getTime();
       const tb = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : new Date(b.createdAt || 0).getTime();
       return tb - ta;
     });
 
+    // Deduplicate identical posts (same author + same text) across local/Firestore
+    const seenByText = new Set();
+    const deduped = [];
+    finalList.forEach(n => {
+      const key = `${(n.createdByName || '')}|${(n.content || '')}`;
+      if (!seenByText.has(key)) {
+        seenByText.add(key);
+        deduped.push(n);
+      }
+    });
+
     if (typeof callback === 'function') {
-      callback(finalList);
+      callback(deduped);
     }
   };
 
@@ -383,8 +510,11 @@ export function subscribeNotices(classroomId, callback) {
   deliverNotices([]);
 
   const db = getFirestore();
+  // No orderBy here: sorting is done client-side so the subscription works even
+  // when some older notice documents lack a createdAt field or when an index is
+  // unavailable on the Firestore free tier.
   const unsub = safeOnSnapshot(
-    query(collection(db, 'classrooms', classroomId, 'notices'), orderBy('createdAt', 'desc')),
+    collection(db, 'classrooms', classroomId, 'notices'),
     (snap) => {
       const fsList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       deliverNotices(fsList);

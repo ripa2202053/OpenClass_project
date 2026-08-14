@@ -1,6 +1,6 @@
 import {
   getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc,
-  query, where, onSnapshot, serverTimestamp, getDocs, writeBatch
+  query, where, orderBy, limit, onSnapshot, serverTimestamp, getDocs, writeBatch
 } from 'firebase/firestore';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 import { getAuth } from 'firebase/auth';
@@ -38,6 +38,84 @@ export async function createBulkNotifications(recipientIds, type, title, body, d
 }
 
 import { safeOnSnapshot, isQuotaExceededError } from './utils/firestoreGuard.js';
+
+// ─── Per-user notifications sub-collection ─────────────────────────────
+// Teacher actions fan out to each enrolled student's own
+// `users/{studentId}/notifications` sub-collection. Students only read their
+// own sub-collection (rules enforce ownership), giving full data isolation.
+
+const subNotifTime = (n) => {
+  const t = n.timestamp || n.createdAt;
+  if (!t) return 0;
+  if (typeof t.toMillis === 'function') return t.toMillis();
+  if (typeof t.toDate === 'function') return t.toDate().getTime();
+  const ms = Date.parse(t);
+  return isNaN(ms) ? 0 : ms;
+};
+
+export function subscribeUserNotifications(uid, callback) {
+  const db = getFirestore();
+  const unsubs = [];
+  const seen = new Map();
+
+  const deliver = () => {
+    const list = [...seen.values()].sort((a, b) => subNotifTime(b) - subNotifTime(a));
+    callback(list);
+  };
+
+  unsubs.push(safeOnSnapshot(
+    query(collection(db, 'users', uid, 'notifications'), orderBy('timestamp', 'desc'), limit(100)),
+    (snap) => {
+      snap.docChanges().forEach(ch => {
+        if (ch.type === 'removed') seen.delete(ch.doc.id);
+        else seen.set(ch.doc.id, { id: ch.doc.id, _source: 'sub', ...ch.doc.data() });
+      });
+      deliver();
+    },
+    (err) => {
+      // orderBy('timestamp') drops docs lacking a timestamp; fall back to an
+      // unordered snapshot so no notification is ever hidden.
+      console.warn('[notificationService] subscribeUserNotifications ordered query failed, falling back:', err);
+      const unsub = safeOnSnapshot(
+        collection(db, 'users', uid, 'notifications'),
+        (snap) => {
+          snap.docs.forEach(d => seen.set(d.id, { id: d.id, _source: 'sub', ...d.data() }));
+          deliver();
+        },
+        () => {},
+        'subscribeUserNotifications.unordered'
+      );
+      unsubs.push(unsub);
+    },
+    'subscribeUserNotifications'
+  ));
+
+  return () => unsubs.forEach(u => u());
+}
+
+export async function markUserNotificationRead(uid, notificationId) {
+  if (!uid || !notificationId) return;
+  await updateDoc(doc(getFirestore(), 'users', uid, 'notifications', notificationId), { read: true, isRead: true });
+}
+
+export async function markAllUserNotificationsRead(uid) {
+  if (!uid) return;
+  const db = getFirestore();
+  try {
+    const snap = await getDocs(query(collection(db, 'users', uid, 'notifications'), where('read', '==', false)));
+    const batch = writeBatch(db);
+    snap.docs.forEach(d => batch.update(d.ref, { read: true, isRead: true }));
+    await batch.commit();
+  } catch (e) {
+    if (isQuotaExceededError(e)) console.warn('[notificationService] markAllUserNotificationsRead quota warning:', e.message);
+    else throw e;
+  }
+}
+
+export async function deleteUserNotification(uid, notificationId) {
+  if (!uid || !notificationId) return;
+  await deleteDoc(doc(getFirestore(), 'users', uid, 'notifications', notificationId));
+}
 
 export function subscribeNotifications(uid, callback) {
   const db = getFirestore();

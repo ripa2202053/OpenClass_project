@@ -1,6 +1,7 @@
 import express from 'express';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { verifyAuthToken } from '../middleware/auth.js';
+import { emitTeacherEvent } from '../utils/classroomEvents.js';
 
 const router = express.Router();
 
@@ -500,12 +501,15 @@ router.post('/:id/requests/:userId/accept', verifyAuthToken, async (req, res) =>
       updatedAt: FieldValue.serverTimestamp(),
     });
 
-    // Add activity log
+    // Add activity log (include the student's roll number when present)
+    const joinDisplayName = reqData.displayName || 'A student';
+    const joinRoll = reqData.studentId || reqData.roll || '';
+    const joinLogName = joinRoll ? `${joinDisplayName} (${joinRoll})` : joinDisplayName;
     await classRef.collection('activity').add({
       type: 'member_approved',
-      description: `${reqData.displayName || 'A student'} joined the classroom`,
+      description: `${joinLogName} joined the classroom`,
       userId,
-      userName: reqData.displayName || 'Student',
+      userName: joinDisplayName,
       timestamp: FieldValue.serverTimestamp(),
     });
 
@@ -569,6 +573,75 @@ router.post('/:id/requests/:userId/reject', verifyAuthToken, async (req, res) =>
   } catch (error) {
     console.error('Error rejecting join request:', error);
     return res.status(500).json({ error: 'Failed to reject join request', details: error.message });
+  }
+});
+
+// POST /api/classrooms/:id/announcements - Teacher posts announcement
+// (dual-layer: stream card + per-student notifications)
+router.post('/:id/announcements', verifyAuthToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, content } = req.body;
+    const user = req.user;
+    const db = getFirestore();
+
+    const classRef = db.collection('classrooms').doc(id);
+    const classSnap = await classRef.get();
+    if (!classSnap.exists) {
+      return res.status(404).json({ error: 'Classroom not found.' });
+    }
+    const classroomData = classSnap.data();
+    const isOwner =
+      classroomData.createdBy === user.uid ||
+      classroomData.teacherId === user.uid ||
+      classroomData.teacherUid === user.uid ||
+      classroomData.ownerId === user.uid;
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Permission denied: Only the classroom teacher can post announcements.' });
+    }
+
+    const cleanTitle = String(title || '').trim().slice(0, 200) || 'Announcement';
+    const cleanContent = String(content || '').trim().slice(0, 8000);
+    if (!cleanContent) {
+      return res.status(400).json({ error: 'Announcement content is required.' });
+    }
+    const teacherName = user.name || user.displayName || user.email || classroomData.teacherName || 'Teacher';
+    const cleanAttachments = Array.isArray(req.body.attachments)
+      ? req.body.attachments.slice(0, 10).filter(a => a && a.fileName && (a.fileId || a.downloadURL))
+      : [];
+
+    const noticeRef = await classRef.collection('notices').add({
+      title: cleanTitle,
+      content: cleanContent,
+      createdBy: user.uid,
+      createdByName: teacherName,
+      pinned: req.body.pinned === true,
+      attachments: cleanAttachments,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    // Dual-layer event: course stream card + per-student notifications
+    const className = classroomData.classroomName || 'Classroom';
+    try {
+      await emitTeacherEvent(id, classroomData, {
+        type: 'announcement',
+        title: cleanTitle,
+        message: `${teacherName} posted an announcement in ${className}: "${cleanContent.slice(0, 120)}${cleanContent.length > 120 ? '…' : ''}"`,
+        teacherName,
+        teacherId: user.uid,
+        itemId: noticeRef.id,
+        itemType: 'announcement',
+        link: `/classroom/${id}`,
+        metadata: { content: cleanContent },
+      });
+    } catch (err) {
+      console.warn('[Classrooms Route] Stream/notification emit failed (non-blocking):', err.message || err);
+    }
+
+    return res.status(201).json({ id: noticeRef.id, title: cleanTitle, content: cleanContent, createdByName: teacherName });
+  } catch (error) {
+    console.error('Error posting announcement:', error);
+    return res.status(500).json({ error: 'Failed to post announcement', details: error.message });
   }
 });
 

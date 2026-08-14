@@ -501,7 +501,7 @@ export async function approveMember(classroomId, memberUid, user) {
   });
   await addDoc(collection(db, 'classrooms', classroomId, 'activity'), {
     type: 'member_approved',
-    description: `${reqData.displayName} joined the classroom`,
+    description: `${reqData.displayName}${reqData.studentId ? ` (${reqData.studentId})` : ''} joined the classroom`,
     userId: memberUid,
     userName: reqData.displayName,
     timestamp: serverTimestamp(),
@@ -779,6 +779,9 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
   const db = getFirestore();
   const cacheKey = `openclass_members_${classroomId}`;
 
+  // Live metadata merged from the classroom doc snapshot (real-time count fixes)
+  const liveMeta = {};
+
   // Helper to build members list synchronously without waiting for network
   const buildSyncMembers = (subcollDocs = []) => {
     const memberMap = new Map();
@@ -792,11 +795,15 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
       }
     });
 
-    // 2. Read active classroom metadata from window context / localStorage
-    const activeClass = window._currentDetailClassroom || {};
+    // 2. Read active classroom metadata from window context / live doc snapshot
+    const activeClass = { ...(window._currentDetailClassroom || {}), ...liveMeta };
     const teacherUid = activeClass.createdBy || activeClass.teacherId || activeClass.teacherUid || 'teacher_uid';
     const teacherName = activeClass.teacherName || 'MST. RIPA KHATUN (2202053)';
-    const teacherPhoto = activeClass.teacherPhotoURL || '';
+    const teacherPhoto = activeClass.teacherPhotoURL ||
+      activeClass.instructorAvatar ||
+      (activeClass.teacher && activeClass.teacher.photoURL) ||
+      activeClass.creatorAvatar ||
+      '';
 
     // Always guarantee lead teacher is in memberMap
     if (!memberMap.has(teacherUid)) {
@@ -838,6 +845,17 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
     return Array.from(memberMap.values());
   };
 
+  const deliver = (list) => {
+    try { localStorage.setItem(cacheKey, JSON.stringify(list)); } catch (e) {}
+    if (typeof callback === 'function') callback(list);
+  };
+
+  const refreshFromState = (subcollDocs = []) => {
+    const merged = { ...(window._currentDetailClassroom || {}), ...liveMeta };
+    window._currentDetailClassroom = merged;
+    deliver(buildSyncMembers(subcollDocs));
+  };
+
   // 1. Deliver SYNCHRONOUSLY immediately (0ms delay)
   let currentList = buildSyncMembers([]);
   try {
@@ -849,24 +867,80 @@ export function subscribeToClassroomMembers(classroomId, callback = () => {}) {
       }
     }
   } catch (e) {}
+  deliver(currentList);
 
-  try { localStorage.setItem(cacheKey, JSON.stringify(currentList)); } catch (e) {}
-  if (typeof callback === 'function') {
-    callback(currentList);
-  }
+  // 2. Classroom doc listener -> real-time memberCount / enrolledStudents updates
+  const unsubDoc = safeOnSnapshot(
+    doc(db, 'classrooms', classroomId),
+    (snap) => {
+      if (snap.exists()) {
+        const d = snap.data();
+        if (d.memberCount !== undefined) liveMeta.memberCount = d.memberCount;
+        if (Array.isArray(d.enrolledStudents)) liveMeta.enrolledStudents = d.enrolledStudents;
+        if (Array.isArray(d.students)) liveMeta.students = d.students;
+        if (Array.isArray(d.members)) liveMeta.members = d.members;
+        if (d.teacherName) liveMeta.teacherName = d.teacherName;
+        if (d.teacherPhotoURL) liveMeta.teacherPhotoURL = d.teacherPhotoURL;
+        refreshFromState(subcollCache);
+      }
+    },
+    (err) => console.warn('[ClassroomService] subscribeToClassroomMembers doc quota warning:', err.message),
+    'subscribeToClassroomMembers.doc'
+  );
 
-  // 2. Non-blocking Firestore snapshot subscription in background
-  return safeOnSnapshot(
+  // 3. Members subcollection listener (non-blocking background sync)
+  let subcollCache = [];
+  const unsubMembers = safeOnSnapshot(
     collection(db, 'classrooms', classroomId, 'members'),
     (snap) => {
-      const updated = buildSyncMembers(snap.docs);
-      try { localStorage.setItem(cacheKey, JSON.stringify(updated)); } catch (e) {}
-      if (typeof callback === 'function') callback(updated);
+      subcollCache = snap.docs;
+      refreshFromState(snap.docs);
     },
     (err) => {
       console.warn('[ClassroomService] subscribeToClassroomMembers snapshot quota warning:', err.message);
     },
-    'subscribeToClassroomMembers'
+    'subscribeToClassroomMembers.members'
+  );
+
+  return () => { unsubDoc(); unsubMembers(); };
+}
+
+export function subscribeToClassroomFiles(classroomId, callback = () => {}) {
+  if (!classroomId) {
+    if (typeof callback === 'function') callback([]);
+    return () => {};
+  }
+  const db = getFirestore();
+  const cacheKey = `openclass_files_${classroomId}`;
+
+  const deliver = (list) => {
+    try { localStorage.setItem(cacheKey, JSON.stringify(list)); } catch (e) {}
+    if (typeof callback === 'function') callback(list);
+  };
+
+  // Deliver cached files immediately (offline / quota resilience)
+  try {
+    const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+    if (Array.isArray(cached) && cached.length > 0) deliver(cached);
+  } catch (e) {}
+
+  return safeOnSnapshot(
+    collection(db, 'classrooms', classroomId, 'files'),
+    (snap) => {
+      const fsList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Merge cached local items so quota-fallback uploads are never lost
+      const map = new Map();
+      fsList.forEach(f => map.set(f.id || f.fileId, f));
+      try {
+        const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+        if (Array.isArray(cached)) {
+          cached.forEach(f => { if (!map.has(f.id || f.fileId)) map.set(f.id || f.fileId, f); });
+        }
+      } catch (e) {}
+      deliver(Array.from(map.values()));
+    },
+    (err) => console.warn('[ClassroomService] subscribeToClassroomFiles quota warning:', err.message),
+    'subscribeToClassroomFiles'
   );
 }
 
@@ -932,6 +1006,22 @@ export function subscribeToClassroomActivity(classroomId, callback = () => {}) {
     (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
     (err) => console.warn('[ClassroomService] subscribeToClassroomActivity quota warning:', err),
     'subscribeToClassroomActivity'
+  );
+}
+
+// Course-specific Stream feed: subscribes ONLY to classrooms/{classId}/stream so
+// the Stream tab can never leak items from another course.
+export function subscribeToClassroomStream(classroomId, callback = () => {}) {
+  return safeOnSnapshot(
+    query(collection(getFirestore(), 'classrooms', classroomId, 'stream'), orderBy('createdAt', 'desc'), limit(100)),
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => {
+      console.warn('[ClassroomService] subscribeToClassroomStream quota warning:', err);
+      try {
+        callback(null);
+      } catch (e) {}
+    },
+    'subscribeToClassroomStream'
   );
 }
 
