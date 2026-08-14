@@ -266,33 +266,141 @@ export async function addActivity(classroomId, type, description, user) {
   }
 }
 
+const activeNoticeListeners = new Map();
+
 export async function addNotice(classroomId, title, content, user) {
   if (!classroomId) return;
+
+  const newNotice = {
+    id: `notice_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    classroomId,
+    title: title || 'Announcement',
+    content: content || '',
+    createdBy: user?.uid || 'teacher',
+    createdByName: user?.displayName || user?.name || 'Teacher',
+    createdAt: new Date().toISOString(),
+  };
+
+  // 1. Immediately save to LocalStorage for instant local & offline rendering
+  const cacheKey = `openclass_notices_${classroomId}`;
+  const globalCacheKey = 'openclass_global_notices';
+  try {
+    const existing = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+    const updated = [newNotice, ...existing.filter(n => n.id !== newNotice.id)];
+    localStorage.setItem(cacheKey, JSON.stringify(updated));
+
+    const globalExisting = JSON.parse(localStorage.getItem(globalCacheKey) || '[]');
+    const globalUpdated = [newNotice, ...globalExisting.filter(n => n.id !== newNotice.id)];
+    localStorage.setItem(globalCacheKey, JSON.stringify(globalUpdated));
+  } catch (e) {}
+
+  // 2. Trigger active notice listeners synchronously
+  const listeners = activeNoticeListeners.get(classroomId) || [];
+  listeners.forEach(cb => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+      cb(stored);
+    } catch (e) {}
+  });
+
+  // 3. Best-effort write to Firestore
   const db = getFirestore();
   try {
     await addDoc(collection(db, 'classrooms', classroomId, 'notices'), {
-      title,
-      content,
-      createdBy: user.uid,
-      createdByName: user.displayName,
+      title: newNotice.title,
+      content: newNotice.content,
+      createdBy: newNotice.createdBy,
+      createdByName: newNotice.createdByName,
       createdAt: serverTimestamp(),
     });
   } catch (e) {
     if (isQuotaExceededError(e)) {
-      console.warn('Could not add notice (quota exceeded):', e.message);
+      console.warn('Could not add notice to Firestore (quota exceeded, preserved in LocalStorage):', e.message);
     } else {
-      console.warn('Could not add notice:', e);
+      console.warn('Could not add notice to Firestore:', e);
     }
   }
+
+  return newNotice;
 }
 
 export function subscribeNotices(classroomId, callback) {
+  if (!classroomId) {
+    if (typeof callback === 'function') callback([]);
+    return () => {};
+  }
+
+  const cacheKey = `openclass_notices_${classroomId}`;
+  const globalCacheKey = 'openclass_global_notices';
+
+  // Helper to deliver merged notices from localStorage + Firestore
+  const deliverNotices = (fsNotices = []) => {
+    const noticeMap = new Map();
+
+    // Add Firestore notices
+    fsNotices.forEach(n => {
+      if (n && n.id) noticeMap.set(n.id, n);
+    });
+
+    // Add LocalStorage notices for this classroom
+    try {
+      const local = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+      if (Array.isArray(local)) {
+        local.forEach(n => {
+          if (n && n.id && !noticeMap.has(n.id)) noticeMap.set(n.id, n);
+        });
+      }
+    } catch (e) {}
+
+    // Add global LocalStorage notices fallback
+    try {
+      const globalLocal = JSON.parse(localStorage.getItem(globalCacheKey) || '[]');
+      if (Array.isArray(globalLocal)) {
+        globalLocal.filter(n => n.classroomId === classroomId || !n.classroomId).forEach(n => {
+          if (n && n.id && !noticeMap.has(n.id)) noticeMap.set(n.id, n);
+        });
+      }
+    } catch (e) {}
+
+    const finalList = Array.from(noticeMap.values()).sort((a, b) => {
+      const ta = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : new Date(a.createdAt || 0).getTime();
+      const tb = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : new Date(b.createdAt || 0).getTime();
+      return tb - ta;
+    });
+
+    if (typeof callback === 'function') {
+      callback(finalList);
+    }
+  };
+
+  // Register listener for instant local updates when posting
+  if (!activeNoticeListeners.has(classroomId)) {
+    activeNoticeListeners.set(classroomId, []);
+  }
+  activeNoticeListeners.get(classroomId).push(callback);
+
+  // Deliver initial local cache immediately
+  deliverNotices([]);
+
   const db = getFirestore();
-  return safeOnSnapshot(
+  const unsub = safeOnSnapshot(
     query(collection(db, 'classrooms', classroomId, 'notices'), orderBy('createdAt', 'desc')),
-    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-    (err) => console.warn('[dashboardService] subscribeNotices quota warning:', err),
+    (snap) => {
+      const fsList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      deliverNotices(fsList);
+    },
+    (err) => {
+      console.warn('[dashboardService] subscribeNotices quota warning:', err);
+      deliverNotices([]);
+    },
     'subscribeNotices'
   );
+
+  return () => {
+    unsub();
+    const arr = activeNoticeListeners.get(classroomId) || [];
+    const idx = arr.indexOf(callback);
+    if (idx !== -1) arr.splice(idx, 1);
+  };
 }
 
