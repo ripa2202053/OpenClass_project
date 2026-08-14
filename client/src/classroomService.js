@@ -609,14 +609,27 @@ export function subscribeToUserClassrooms(uid, role, callback) {
   const db = getFirestore();
 
   let hasDelivered = false;
+  let latestFirestoreList = [];
 
   const deliver = (list, errMessage = null) => {
     hasDelivered = true;
+    let finalList = Array.isArray(list) ? list : [];
+
+    // Prioritize and preserve valid Firestore matched classrooms
+    if (finalList.length === 0 && latestFirestoreList.length > 0) {
+      finalList = latestFirestoreList;
+    } else if (finalList.length > 0 && latestFirestoreList.length > 0) {
+      const map = new Map();
+      latestFirestoreList.forEach(c => map.set(c.classroomId || c.id, c));
+      finalList.forEach(c => map.set(c.classroomId || c.id, c));
+      finalList = Array.from(map.values());
+    }
+
     try {
-      localStorage.setItem(cacheKey, JSON.stringify(list));
+      localStorage.setItem(cacheKey, JSON.stringify(finalList));
     } catch (e) {}
     if (typeof callback === 'function') {
-      callback(list, errMessage);
+      callback(finalList, errMessage);
     }
   };
 
@@ -632,10 +645,12 @@ export function subscribeToUserClassrooms(uid, role, callback) {
   fetchWithAuth('/api/classrooms')
     .then(data => {
       console.log('[ClassroomService] API /api/classrooms response:', data);
-      if (Array.isArray(data)) {
+      if (Array.isArray(data) && data.length > 0) {
         const formatted = data.map(c => ({ classroomId: c.id || c.classroomId, ...c }));
         const map = new Map();
-        if (Array.isArray(cached)) {
+        if (Array.isArray(latestFirestoreList) && latestFirestoreList.length > 0) {
+          latestFirestoreList.forEach(c => map.set(c.classroomId || c.id, c));
+        } else if (Array.isArray(cached)) {
           cached.forEach(c => map.set(c.classroomId || c.id, c));
         }
         formatted.forEach(c => map.set(c.classroomId || c.id, c));
@@ -643,13 +658,20 @@ export function subscribeToUserClassrooms(uid, role, callback) {
         mergedList.forEach(c => knownMemberClassroomIds.add(c.classroomId || c.id));
         console.log('[ClassroomService] API returned merged classroom(s):', mergedList.length);
         deliver(mergedList);
-      } else if (!hasDelivered) {
-        deliver(cached);
+      } else {
+        console.log('[ClassroomService] API returned empty array (0 classrooms), preserving Firestore/cached list.');
+        if (latestFirestoreList.length > 0) {
+          deliver(latestFirestoreList);
+        } else if (cached.length > 0 && !hasDelivered) {
+          deliver(cached);
+        }
       }
     })
     .catch(err => {
       console.warn('[ClassroomService] Express API fetch classrooms failed/quota:', err.message);
-      if (!hasDelivered) {
+      if (latestFirestoreList.length > 0) {
+        deliver(latestFirestoreList);
+      } else if (!hasDelivered) {
         deliver(cached);
       }
     });
@@ -730,6 +752,7 @@ export function subscribeToUserClassrooms(uid, role, callback) {
           return tb - ta;
         });
 
+        latestFirestoreList = userClassrooms;
         console.log('[ClassroomService] Firestore matched classrooms:', userClassrooms.length);
         deliver(userClassrooms);
       } catch (error) {
