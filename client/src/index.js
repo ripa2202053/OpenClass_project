@@ -7922,10 +7922,13 @@ export function initClassroomFilesModule() {
         if (progressBar) progressBar.style.width = '100%';
         if (progressPercent) progressPercent.textContent = '100%';
 
-        if (res && res.id) {
+        if (res) {
+          const fileObj = res.file || res;
           const cacheKey = `openclass_files_${targetClassroomId}`;
-          const existing = classroomFilesCache.filter(f => f.id !== res.id && f.fileId !== res.fileId);
-          classroomFilesCache = [res, ...existing];
+          let currentStored = [];
+          try { currentStored = JSON.parse(localStorage.getItem(cacheKey) || '[]'); } catch (e) {}
+          const filtered = currentStored.filter(f => (f.id || f.fileId) !== (fileObj.id || fileObj.fileId));
+          classroomFilesCache = [fileObj, ...filtered];
           try { localStorage.setItem(cacheKey, JSON.stringify(classroomFilesCache)); } catch (e) {}
         }
 
