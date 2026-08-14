@@ -2901,125 +2901,12 @@ function openClassroomDetail(classroom) {
     `;
   }
 
-  // Footer Actions Rendering
+  // Footer Actions (Removed redundant sticky footer to declutter viewport)
   const footer = document.getElementById('detail-modal-footer');
-  footer.innerHTML = '';
-  footer.style.display = 'flex';
-  footer.style.justifyContent = 'space-between';
-  footer.style.alignItems = 'center';
-  footer.style.flexWrap = 'wrap';
-  footer.style.gap = '12px';
-
-  const leftFooterDiv = document.createElement('div');
-  leftFooterDiv.style.display = 'flex';
-  leftFooterDiv.style.alignItems = 'center';
-  leftFooterDiv.style.gap = '12px';
-
-  const rightFooterDiv = document.createElement('div');
-  rightFooterDiv.style.display = 'flex';
-  rightFooterDiv.style.alignItems = 'center';
-  rightFooterDiv.style.gap = '12px';
-  rightFooterDiv.style.flexWrap = 'wrap';
-
-  if (isCreator) {
-    const editBtn = document.createElement('button');
-    editBtn.className = 'btn btn-outline';
-    editBtn.innerHTML = '<i class="material-icons" style="font-size:16px;">edit</i> Edit Class';
-    editBtn.addEventListener('click', () => {
-      modal.style.display = 'none';
-      openEditModal(classroom);
-    });
-    rightFooterDiv.appendChild(editBtn);
-
-    const archBtn = document.createElement('button');
-    archBtn.className = 'btn btn-outline';
-    archBtn.style.color = classroom.isArchived ? 'var(--success)' : 'var(--warning)';
-    archBtn.innerHTML = `<i class="material-icons" style="font-size:16px;">${classroom.isArchived ? 'unarchive' : 'archive'}</i> ${classroom.isArchived ? 'Restore' : 'Archive'}`;
-    archBtn.addEventListener('click', async () => {
-      if (!confirm(`Are you sure you want to ${classroom.isArchived ? 'restore' : 'archive'} this classroom?`)) return;
-      try {
-        await archiveClassroom(classroom.classroomId, currentUserProfile);
-        modal.style.display = 'none';
-      } catch (err) { alert(err.message); }
-    });
-    rightFooterDiv.appendChild(archBtn);
-  } else {
-    // Student view: Danger compact Leave Class button at left edge
-    const leaveBtn = document.createElement('button');
-    leaveBtn.className = 'btn btn-leave-class-danger';
-    leaveBtn.style.padding = '5px 12px';
-    leaveBtn.style.fontSize = '12px';
-    leaveBtn.style.background = 'rgba(239, 68, 68, 0.12)';
-    leaveBtn.style.color = '#ef4444';
-    leaveBtn.style.border = '1px solid rgba(239, 68, 68, 0.3)';
-    leaveBtn.style.borderRadius = '8px';
-    leaveBtn.style.cursor = 'pointer';
-    leaveBtn.innerHTML = '<i class="material-icons" style="font-size:14px;">exit_to_app</i> Leave Class';
-    leaveBtn.addEventListener('click', async () => {
-      if (!confirm('Are you sure you want to leave this classroom?')) return;
-      try {
-        await leaveClassroom(classroom.classroomId, currentUserProfile);
-        modal.style.display = 'none';
-      } catch (err) { alert(err.message); }
-    });
-    leftFooterDiv.appendChild(leaveBtn);
-
-    // Ask Question button for students
-    const askQBtn = document.createElement('button');
-    askQBtn.className = 'btn btn-outline';
-    askQBtn.style.fontSize = '13px';
-    askQBtn.innerHTML = '<i class="material-icons" style="font-size:16px;">help_outline</i> Ask Question';
-    askQBtn.addEventListener('click', () => {
-      const askModal = document.getElementById('modal-ask-question');
-      if (askModal) {
-        document.getElementById('ask-question-topic').value = '';
-        document.getElementById('ask-question-message').value = '';
-        askModal.style.display = 'flex';
-
-        const submitBtn = document.getElementById('btn-submit-teacher-question');
-        if (submitBtn) {
-          submitBtn.onclick = async () => {
-            const topic = document.getElementById('ask-question-topic').value.trim();
-            const message = document.getElementById('ask-question-message').value.trim();
-            if (!message) {
-              alert('Please write your question before submitting.');
-              return;
-            }
-            try {
-              await addNotice(classroom.classroomId, `Question: ${topic || 'General Question'}`, `From ${currentUserProfile?.displayName || 'Student'}:\n\n${message}`, currentUserProfile);
-              alert('Your question has been sent directly to the teacher!');
-              askModal.style.display = 'none';
-            } catch (err) {
-              alert('Error sending question: ' + err.message);
-            }
-          };
-        }
-      }
-    });
-    rightFooterDiv.appendChild(askQBtn);
+  if (footer) {
+    footer.innerHTML = '';
+    footer.style.display = 'none';
   }
-
-  const chatBtn = document.createElement('button');
-  chatBtn.className = 'btn btn-outline';
-  chatBtn.style.fontSize = '13px';
-  chatBtn.innerHTML = '<i class="material-icons" style="font-size:16px;">forum</i> Chat Channel';
-  chatBtn.addEventListener('click', () => {
-    modal.style.display = 'none';
-    const channelItem = document.querySelector(`.channel-item[data-channel-id="${classroom.classroomId}"]`);
-    if (channelItem) channelItem.click();
-    else document.querySelector('.nav-item[data-tab="chat"]')?.click();
-  });
-  rightFooterDiv.appendChild(chatBtn);
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'btn btn-primary';
-  closeBtn.style.fontSize = '13px';
-  closeBtn.textContent = 'Back to Classrooms';
-  closeBtn.addEventListener('click', () => { modal.style.display = 'none'; });
-  rightFooterDiv.appendChild(closeBtn);
-
-  footer.appendChild(leftFooterDiv);
-  footer.appendChild(rightFooterDiv);
 
   modal.style.display = 'flex';
   switchDetailTab('stream');
