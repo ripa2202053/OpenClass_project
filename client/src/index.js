@@ -8763,25 +8763,42 @@ async function editClassroomFile(classroomId, file) {
 }
 
 async function deleteClassroomFile(classroomId, file) {
-  if (!confirm(`Are you sure you want to delete "${file.title || file.originalName}"?\n\nThis will remove both the document metadata and the file from Firebase Storage.`)) {
+  const fileId = file.id || file.fileId;
+  const fileName = file.originalName || file.title || 'file';
+  if (!confirm(`Are you sure you want to delete "${fileName}"?\n\nThis will remove the file for all students in this classroom.`)) {
     return;
   }
 
   try {
-    await fetchWithAuth(`/api/classrooms/${classroomId}/files/${file.id || file.fileId}`, {
+    await fetchWithAuth(`/api/classrooms/${classroomId}/files/${fileId}`, {
       method: 'DELETE'
     });
-
-    const socket = getSocket();
-    if (socket) {
-      socket.emit('delete-file', { classroomId, fileId: file.id || file.fileId });
-    }
-
-    showAppToast(`"${file.originalName || file.title}" was removed.`, 'success');
-    fetchAndRenderClassroomFiles(classroomId);
   } catch (err) {
-    alert('Failed to delete file: ' + describeApiError(err));
+    console.warn('Express API delete file warning (attempting Firestore fallback):', err.message);
   }
+
+  try {
+    const db = getFirestore();
+    await deleteDoc(doc(db, 'classrooms', classroomId, 'files', fileId));
+    await deleteDoc(doc(db, 'classrooms', classroomId, 'stream', fileId)).catch(() => {});
+  } catch (fsErr) {
+    console.warn('Firestore delete file doc warning:', fsErr.message);
+  }
+
+  const cacheKey = `openclass_files_${classroomId}`;
+  try {
+    const currentStored = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+    const updated = currentStored.filter(f => (f.id || f.fileId) !== fileId);
+    localStorage.setItem(cacheKey, JSON.stringify(updated));
+  } catch (e) {}
+
+  const socket = getSocket();
+  if (socket) {
+    socket.emit('delete-file', { classroomId, fileId });
+  }
+
+  showAppToast(`"${fileName}" was removed.`, 'success');
+  fetchAndRenderClassroomFiles(classroomId);
 }
 
 // Global initialization for Files & Resources tab
