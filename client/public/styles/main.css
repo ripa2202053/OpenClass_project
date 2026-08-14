@@ -1471,11 +1471,12 @@ select.auth-input { cursor: pointer; appearance: none; background-image: url("da
 .gc-fullscreen-header {
   height: 64px;
   padding: 0 24px;
-  border-bottom: 1px solid var(--border);
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--card-bg);
+  gap: 16px;
   flex-shrink: 0;
   z-index: 10;
 }
@@ -1484,6 +1485,7 @@ select.auth-input { cursor: pointer; appearance: none; background-image: url("da
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-shrink: 0;
 }
 
 .gc-back-btn {
@@ -1522,21 +1524,48 @@ select.auth-input { cursor: pointer; appearance: none; background-image: url("da
 .gc-fullscreen-tabs {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   height: 100%;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding: 0 8px;
+}
+
+.gc-fullscreen-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .gc-fullscreen-tabs .detail-tab {
-  height: 100%;
-  border: none;
-  border-bottom: 3px solid transparent;
-  border-radius: 0;
+  height: 40px;
+  margin: auto 0;
+  border: 1px solid transparent;
+  border-radius: 20px;
   padding: 0 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #94a3b8;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.gc-fullscreen-tabs .detail-tab:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .gc-fullscreen-tabs .detail-tab.active {
-  border-bottom-color: var(--primary);
-  background: transparent;
+  color: #60a5fa;
+  background: rgba(37, 99, 235, 0.15);
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 0 16px rgba(37, 99, 235, 0.25);
+  font-weight: 600;
 }
 
 .gc-hero-banner {
