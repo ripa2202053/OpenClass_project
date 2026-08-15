@@ -13,16 +13,9 @@ export default function VideoGrid({
   isHost = false,
   speakingId = null,
 }) {
-  const uniqueRemoteMap = new Map();
-  (participants || []).forEach((p) => {
-    if (!p) return;
-    const sId = p.socketId || p.id;
-    if (!sId || sId === 'self' || (selfSocketId && sId === selfSocketId)) return;
-    if (!uniqueRemoteMap.has(sId)) {
-      uniqueRemoteMap.set(sId, p);
-    }
-  });
-  const remoteParticipants = Array.from(uniqueRemoteMap.values());
+  const remotePeers = Array.from(
+    new Map((participants || []).map((p) => [p?.socketId || p?.id, p])).values()
+  ).filter((p) => p && (p.socketId || p.id) && (p.socketId || p.id) !== selfSocketId && (p.socketId || p.id) !== 'self');
 
   const tiles = [
     {
@@ -37,7 +30,7 @@ export default function VideoGrid({
       isHost,
       raisedHand: selfRaisedHand,
     },
-    ...remoteParticipants.map((p, idx) => ({
+    ...remotePeers.map((p, idx) => ({
       id: p.socketId || p.id || `remote-${idx}`,
       name: p.userName || p.name || (p.isHost ? 'Teacher' : 'Participant'),
       stream: p.stream || null,

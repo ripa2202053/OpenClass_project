@@ -357,28 +357,26 @@ export default function useWebRTC() {
         setSelfSocketId(socket.id);
       });
 
+      const handleUserJoined = (user) => {
+        const myId = selfSocketIdRef.current || socketRef.current?.id;
+        const sId = user?.socketId || user?.id;
+        if (!sId || sId === myId) return;
+        connectToPeer(user, false);
+      };
+
       socket.on('existing-users', (users) => {
         if (Array.isArray(users)) {
           const myId = selfSocketIdRef.current || socketRef.current?.id;
           users.forEach((u) => {
-            if (u && u.socketId && u.socketId !== myId) connectToPeer(u, true);
+            const sId = u?.socketId || u?.id;
+            if (sId && sId !== myId) connectToPeer(u, true);
           });
         }
       });
 
-      socket.on('user-joined', (user) => {
-        const myId = selfSocketIdRef.current || socketRef.current?.id;
-        if (user && user.socketId && user.socketId !== myId) {
-          connectToPeer(user, false);
-        }
-      });
-
-      socket.on('user-connected', (user) => {
-        const myId = selfSocketIdRef.current || socketRef.current?.id;
-        if (user && user.socketId && user.socketId !== myId) {
-          connectToPeer(user, false);
-        }
-      });
+      socket.on('user-joined', handleUserJoined);
+      socket.on('user-connected', handleUserJoined);
+      socket.on('peer-joined', handleUserJoined);
 
       socket.on('offer', async ({ from, sdp }) => {
         const myId = selfSocketIdRef.current || socketRef.current?.id;
@@ -460,9 +458,16 @@ export default function useWebRTC() {
         }
       });
 
-      socket.on('user-disconnected', ({ socketId }) => {
-        cleanupPeer(socketId);
-      });
+      const handleUserLeft = (data) => {
+        const sId = typeof data === 'string' ? data : (data?.socketId || data?.id);
+        if (!sId) return;
+        cleanupPeer(sId);
+        setRemoteStreams((prev) => prev.filter((p) => p.socketId !== sId && p.id !== sId));
+        setParticipants((prev) => prev.filter((p) => p.socketId !== sId && p.id !== sId));
+      };
+
+      socket.on('user-disconnected', handleUserLeft);
+      socket.on('user-left', handleUserLeft);
 
       socket.on('room-state', (list) => {
         if (!Array.isArray(list)) return;
