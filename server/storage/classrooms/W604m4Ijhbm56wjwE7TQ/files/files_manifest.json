@@ -1,0 +1,25 @@
+[
+  {
+    "id": "file_1786826800110_ti1u",
+    "fileId": "file_1786826800110_ti1u",
+    "classroomId": "W604m4Ijhbm56wjwE7TQ",
+    "fileName": "Cover page.pdf",
+    "originalName": "Cover page.pdf",
+    "originalFileName": "Cover page.pdf",
+    "lectureTitle": "Cover page.pdf",
+    "title": "Cover page.pdf",
+    "description": "",
+    "fileType": "pdf",
+    "mimeType": "application/pdf",
+    "fileSize": 144457,
+    "storagePath": "classrooms/W604m4Ijhbm56wjwE7TQ/files/file_1786826800110_ti1u/Cover page.pdf",
+    "downloadURL": "/api/classrooms/W604m4Ijhbm56wjwE7TQ/files/file_1786826800110_ti1u/download",
+    "uploadedBy": "JKQRmuOhcEZw81Np8AfXljCZ2w32",
+    "uploadedByName": "MST. RIPA KHATUN (2202053)",
+    "uploadedByPhotoURL": "",
+    "meetingId": null,
+    "category": "Documents",
+    "createdAt": "2026-08-15T20:46:40.116Z",
+    "updatedAt": "2026-08-15T20:46:40.116Z"
+  }
+]
