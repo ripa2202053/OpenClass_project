@@ -29,6 +29,13 @@ export default function MeetingRoom({
 }) {
   const web = useWebRTC();
   const activeRoomId = roomName || roomId;
+
+  const uniqueRemotePeers = Array.from(
+    new Map((web.remoteStreams || []).map((peer) => [peer.socketId, peer])).values()
+  ).filter((peer) => peer && peer.socketId && peer.socketId !== web.selfSocketId);
+
+  const connectedCount = uniqueRemotePeers.length + 1;
+
   const handleClose = () => {
     try { closeInAppMeeting(); } catch (e) {}
     if (typeof onLeave === 'function') onLeave();
@@ -179,7 +186,7 @@ export default function MeetingRoom({
                 <Clock size={14} color="#818CF8" /> {formatTime(seconds)}
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <Users size={14} color="#34D399" /> {Math.max(1, (web.remoteStreams ? web.remoteStreams.length : 0) + 1)} Connected
+                <Users size={14} color="#34D399" /> {connectedCount} Connected
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <Radio size={14} color={web.connected ? '#34D399' : '#FBBF24'} />
@@ -391,7 +398,7 @@ export default function MeetingRoom({
           isScreenSharing={web.isScreenSharing}
           micLevel={web.micLevel}
           raisedHand={web.raisedHand}
-          participantsCount={web.participants.length}
+          participantsCount={connectedCount}
           sidebarOpen={sidebarOpen}
           isHost={web.isHost}
           onToggleMute={web.toggleMute}

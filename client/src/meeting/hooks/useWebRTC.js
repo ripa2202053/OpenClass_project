@@ -60,29 +60,20 @@ export default function useWebRTC() {
   const [selfSocketId, setSelfSocketId] = useState(null);
 
   const publish = useCallback(() => {
-    const list = [];
-    const seenSocketIds = new Set();
-    const seenUserIds = new Set();
+    const map = new Map();
     const myId = selfSocketIdRef.current || socketRef.current?.id;
 
     peersRef.current.forEach((entry, socketId) => {
       if (!socketId || socketId === myId) return;
-      const userId = entry?.meta?.userId || entry?.meta?.uid;
-      if (seenSocketIds.has(socketId) || (userId && seenUserIds.has(userId))) {
-        return;
-      }
-      seenSocketIds.add(socketId);
-      if (userId) seenUserIds.add(userId);
-
-      if (entry.meta) {
-        list.push({
+      if (entry && entry.meta) {
+        map.set(socketId, {
           socketId,
           stream: entry.stream || null,
           ...entry.meta,
         });
       }
     });
-    setRemoteStreams(list);
+    setRemoteStreams(Array.from(map.values()));
   }, []);
 
   const stopMonitor = useCallback((socketId) => {
