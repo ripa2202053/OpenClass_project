@@ -5303,7 +5303,7 @@ function startClassroomInstantMeeting() {}
   const modal = document.getElementById('modal-classroom-detail');
   if (!modal) return;
   const observer = new MutationObserver(() => {
-    if (modal.style.display === 'none') closeClassroomMeeting();
+    if (modal.style.display === 'none') closeInAppMeeting();
   });
   observer.observe(modal, { attributes: true, attributeFilter: ['style'] });
 })();
