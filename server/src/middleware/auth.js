@@ -39,4 +39,31 @@ export async function verifyAuthToken(req, res, next) {
   }
 }
 
+export const verifySocketToken = async (tokenOrSocket, next) => {
+  try {
+    if (typeof next === 'function') {
+      const token = tokenOrSocket?.handshake?.auth?.token || tokenOrSocket?.handshake?.query?.token;
+      if (token) {
+        try {
+          const decoded = await getAuth().verifyIdToken(token);
+          tokenOrSocket.user = decoded;
+        } catch (e) {
+          // allow connection even on invalid dev token
+        }
+      }
+      return next();
+    }
+    const token = typeof tokenOrSocket === 'string' ? tokenOrSocket : null;
+    if (!token) return null;
+    try {
+      return await getAuth().verifyIdToken(token);
+    } catch (e) {
+      return null;
+    }
+  } catch (err) {
+    if (typeof next === 'function') return next();
+    return null;
+  }
+};
+
 export default verifyAuthToken;

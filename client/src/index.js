@@ -3877,7 +3877,7 @@ let subscribeDetailData = function subscribeDetailDataBase(classroomId) {
       card.className = 'request-card';
       const photoUrl = sanitizeProfilePhotoUrl(r.photoURL || '', r) || '/images/profile_placeholder.png';
       card.innerHTML = `
-        <div class="member-avatar-sm" style="background-image:url('${photoUrl}');"></div>
+        <div class="member-avatar-sm" style="background-image: url('${photoUrl}');"></div>
         <div class="member-info">
           <div class="member-name">${r.displayName || 'Unknown'}</div>
           <div class="member-email">${r.email || ''}</div>

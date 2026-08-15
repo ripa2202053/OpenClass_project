@@ -229,11 +229,15 @@ export default function useWebRTC() {
   const onMeetingEndedRef = useRef(null);
   const onKickedRef = useRef(null);
 
-  const setupLocalStream = useCallback(async () => {
+  const setupLocalStream = useCallback(async (options = { audio: true, video: true }) => {
     setError(null);
     let stream = null;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const constraints = {
+        video: options?.video ?? true,
+        audio: options?.audio ?? true,
+      };
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (err) {
       console.warn('Camera+mic unavailable, retrying with audio only:', err);
       setError(
@@ -242,10 +246,10 @@ export default function useWebRTC() {
           : 'Could not access camera/mic. You can still join to watch and chat.',
       );
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (err2) {
-        console.warn('Audio unavailable too:', err2);
-        stream = null;
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } catch (audioErr) {
+        console.warn('Audio only also failed, continuing with no local stream:', audioErr);
+        stream = new MediaStream();
       }
     }
 
@@ -293,13 +297,31 @@ export default function useWebRTC() {
     speakingIdRef.current = null;
   }, []);
 
-  const joinRoom = useCallback(async ({ roomId: rid, userName, token, isHost: hostRole = false, onMeetingEnded, onKicked }) => {
+  const joinRoom = useCallback(async (roomIdOrOptions = { audio: true, video: true }, maybeOptions = {}) => {
+    let options;
+    if (typeof roomIdOrOptions === 'string') {
+      options = { roomId: roomIdOrOptions, ...maybeOptions };
+    } else {
+      options = roomIdOrOptions || { audio: true, video: true };
+    }
+
+    const {
+      roomId: rid,
+      userName,
+      token,
+      isHost: hostRole = false,
+      onMeetingEnded,
+      onKicked,
+      audio = true,
+      video = true,
+    } = options;
+
     onMeetingEndedRef.current = onMeetingEnded;
     onKickedRef.current = onKicked;
     if (socketRef.current) return;
     setError(null);
     try {
-      await setupLocalStream();
+      await setupLocalStream({ audio, video });
     } catch (err) {
       setError(err.message || 'Media permission denied');
       return;
@@ -427,7 +449,7 @@ export default function useWebRTC() {
         }
       });
 
-    const isHostUser = Boolean(options.isHost);
+    const isHostUser = Boolean(options.isHost || hostRole);
     socketRef.current.emit('join-room', { roomId: rid, userName, token, isHost: isHostUser }, (res) => {
       if (!res?.ok) {
         setError(res?.error || 'Failed to join room.');
@@ -449,7 +471,7 @@ export default function useWebRTC() {
         }
       });
     });
-  }, [connectToPeer, cleanupPeer, publish, startMicMeter, leaveRoom]);
+  }, [connectToPeer, cleanupPeer, publish, setupLocalStream, leaveRoom]);
 
   const endMeeting = useCallback((data = {}) => {
     return new Promise((resolve) => {
