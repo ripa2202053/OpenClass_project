@@ -185,7 +185,7 @@ export default function useWebRTC() {
         }
       };
 
-      peersRef.current.set(targetId, { pc, meta: user, stream: null });
+      peersRef.current.set(targetId, { pc, meta: user, stream: null, pendingCandidates: [] });
       publish();
 
       if (initiate) {
@@ -201,6 +201,20 @@ export default function useWebRTC() {
     },
     [cleanupPeer, monitorRemoteAudio, publish],
   );
+
+  const flushPendingCandidates = useCallback(async (socketId) => {
+    const entry = peersRef.current.get(socketId);
+    if (!entry || !entry.pc || !Array.isArray(entry.pendingCandidates) || entry.pendingCandidates.length === 0) return;
+    const queue = [...entry.pendingCandidates];
+    entry.pendingCandidates = [];
+    for (const cand of queue) {
+      try {
+        await entry.pc.addIceCandidate(new RTCIceCandidate(cand));
+      } catch (err) {
+        console.warn('Error adding queued ICE candidate:', err);
+      }
+    }
+  }, []);
 
   const replaceVideoTrackForAllPeers = useCallback((newTrack) => {
     peersRef.current.forEach(({ pc }) => {
@@ -234,8 +248,8 @@ export default function useWebRTC() {
     let stream = null;
     try {
       const constraints = {
-        video: options?.video ?? true,
-        audio: options?.audio ?? true,
+        video: options?.video !== false,
+        audio: options?.audio !== false,
       };
       stream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (err) {
@@ -243,6 +257,8 @@ export default function useWebRTC() {
       setError(
         err.name === 'NotAllowedError'
           ? 'Camera/mic permission denied. You can still join to watch and chat.'
+          : err.name === 'NotReadableError'
+          ? 'Camera/mic in use by another application. Retrying with audio only...'
           : 'Could not access camera/mic. You can still join to watch and chat.',
       );
       try {
@@ -364,6 +380,7 @@ export default function useWebRTC() {
           const pc = entry?.pc;
           if (!pc) return;
           await pc.setRemoteDescription(sdp);
+          await flushPendingCandidates(from);
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           socket.emit('answer', { to: from, sdp: pc.localDescription });
@@ -374,9 +391,11 @@ export default function useWebRTC() {
 
       socket.on('answer', async ({ from, sdp }) => {
         try {
-          const pc = peersRef.current.get(from)?.pc;
+          const entry = peersRef.current.get(from);
+          const pc = entry?.pc;
           if (!pc || !pc.currentLocalDescription) return;
           await pc.setRemoteDescription(sdp);
+          await flushPendingCandidates(from);
         } catch (err) {
           console.warn('Answer handling failed:', err);
         }
@@ -384,9 +403,15 @@ export default function useWebRTC() {
 
       socket.on('ice-candidate', async ({ from, candidate }) => {
         try {
-          const pc = peersRef.current.get(from)?.pc;
-          if (!pc) return;
-          await pc.addIceCandidate(candidate);
+          const entry = peersRef.current.get(from);
+          if (!entry || !entry.pc || !candidate) return;
+          const pc = entry.pc;
+          if (!pc.remoteDescription || !pc.remoteDescription.type) {
+            if (!entry.pendingCandidates) entry.pendingCandidates = [];
+            entry.pendingCandidates.push(candidate);
+            return;
+          }
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (err) {
           console.warn('ICE candidate rejected:', err);
         }
