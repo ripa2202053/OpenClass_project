@@ -2,11 +2,12 @@ import React from 'react';
 import VideoTile from './VideoTile';
 
 export default function VideoGrid({
-  participants = [],
-  peers = [],
   remoteStreams = [],
-  socket = null,
+  peers = [],
+  participants = [],
   localStream = null,
+  socket = null,
+  currentUser = null,
   selfName = 'You',
   selfSocketId = null,
   isSelfMuted = false,
@@ -15,17 +16,21 @@ export default function VideoGrid({
   selfRaisedHand = false,
   isHost = false,
   speakingId = null,
+  ...props
 }) {
-  const rawPeers = (participants && participants.length > 0)
-    ? participants
-    : ((remoteStreams && remoteStreams.length > 0) ? remoteStreams : peers);
+  // Consolidate remote source array
+  const rawList = (remoteStreams && remoteStreams.length > 0)
+    ? remoteStreams
+    : ((peers && peers.length > 0) ? peers : participants);
 
   const currentSocketId = selfSocketId || socket?.id || '';
+  const currentUserId = currentUser?.uid || '';
 
+  // Deduplicate by unique socketId and safely exclude local self
   const remoteParticipants = Array.from(
     new Map(
-      (rawPeers || [])
-        .filter((p) => p && (p.socketId || p.id) && (p.socketId || p.id) !== currentSocketId && (p.socketId || p.id) !== 'self')
+      (rawList || [])
+        .filter((p) => p && (p.socketId || p.id) && (p.socketId || p.id) !== currentSocketId && (p.socketId || p.id) !== 'self' && (!currentUserId || (p.userId || p.uid) !== currentUserId))
         .map((p) => [p.socketId || p.id, p])
     ).values()
   );
@@ -52,7 +57,7 @@ export default function VideoGrid({
       cameraOff: Boolean(p.cameraOff || p.isCameraOff),
       presenting: Boolean(p.screenShare || p.isScreenSharing),
       isSpeaking: speakingId === (p.socketId || p.id),
-      isHost: Boolean(p.isHost),
+      isHost: Boolean(p.isHost || p.role === 'teacher'),
       raisedHand: Boolean(p.raisedHand),
     })),
   ];
