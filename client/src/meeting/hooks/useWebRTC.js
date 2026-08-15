@@ -391,13 +391,34 @@ export default function useWebRTC() {
           }
           const pc = entry?.pc;
           if (!pc) return;
-          await pc.setRemoteDescription(sdp);
+
+          // Check for signaling collision (glare) and handle rollback if negotiating
+          if (pc.signalingState !== 'stable') {
+            console.warn(`[WebRTC] Offer collision detected on peer ${from}, state: ${pc.signalingState}`);
+            try {
+              await pc.setLocalDescription({ type: 'rollback' });
+            } catch (e) {}
+          }
+
+          // 1. Set Remote Description first
+          const offerDesc = sdp instanceof RTCSessionDescription ? sdp : new RTCSessionDescription(sdp);
+          await pc.setRemoteDescription(offerDesc);
+
+          // 2. Process queued ICE candidates
           await flushPendingCandidates(from);
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          socket.emit('answer', { to: from, sdp: pc.localDescription });
+
+          // 3. Create Answer and set Local Description ONLY if state is 'have-remote-offer'
+          if (pc.signalingState === 'have-remote-offer') {
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            // 4. Send answer back via socket
+            socket.emit('answer', { to: from, sdp: pc.localDescription });
+          } else {
+            console.warn(`[WebRTC] Skipped answer creation because signalingState is: ${pc.signalingState}`);
+          }
         } catch (err) {
-          console.warn('Offer handling failed:', err);
+          console.warn('[WebRTC] Offer handling failed safely caught:', err);
         }
       });
 
@@ -407,11 +428,17 @@ export default function useWebRTC() {
         try {
           const entry = peersRef.current.get(from);
           const pc = entry?.pc;
-          if (!pc || !pc.currentLocalDescription) return;
-          await pc.setRemoteDescription(sdp);
-          await flushPendingCandidates(from);
+          if (!pc) return;
+
+          if (pc.signalingState === 'have-local-offer') {
+            const answerDesc = sdp instanceof RTCSessionDescription ? sdp : new RTCSessionDescription(sdp);
+            await pc.setRemoteDescription(answerDesc);
+            await flushPendingCandidates(from);
+          } else {
+            console.warn(`[WebRTC] Skipped answer processing because signalingState is: ${pc.signalingState}`);
+          }
         } catch (err) {
-          console.warn('Answer handling failed:', err);
+          console.warn('[WebRTC] Answer handling failed:', err);
         }
       });
 
