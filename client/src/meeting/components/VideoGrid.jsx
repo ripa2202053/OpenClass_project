@@ -3,6 +3,9 @@ import VideoTile from './VideoTile';
 
 export default function VideoGrid({
   participants = [],
+  peers = [],
+  remoteStreams = [],
+  socket = null,
   localStream = null,
   selfName = 'You',
   selfSocketId = null,
@@ -13,9 +16,19 @@ export default function VideoGrid({
   isHost = false,
   speakingId = null,
 }) {
-  const remotePeers = Array.from(
-    new Map((participants || []).map((p) => [p?.socketId || p?.id, p])).values()
-  ).filter((p) => p && (p.socketId || p.id) && (p.socketId || p.id) !== selfSocketId && (p.socketId || p.id) !== 'self');
+  const rawPeers = (participants && participants.length > 0)
+    ? participants
+    : ((remoteStreams && remoteStreams.length > 0) ? remoteStreams : peers);
+
+  const currentSocketId = selfSocketId || socket?.id || '';
+
+  const remoteParticipants = Array.from(
+    new Map(
+      (rawPeers || [])
+        .filter((p) => p && (p.socketId || p.id) && (p.socketId || p.id) !== currentSocketId && (p.socketId || p.id) !== 'self')
+        .map((p) => [p.socketId || p.id, p])
+    ).values()
+  );
 
   const tiles = [
     {
@@ -30,7 +43,7 @@ export default function VideoGrid({
       isHost,
       raisedHand: selfRaisedHand,
     },
-    ...remotePeers.map((p, idx) => ({
+    ...remoteParticipants.map((p, idx) => ({
       id: p.socketId || p.id || `remote-${idx}`,
       name: p.userName || p.name || (p.isHost ? 'Teacher' : 'Participant'),
       stream: p.stream || null,
