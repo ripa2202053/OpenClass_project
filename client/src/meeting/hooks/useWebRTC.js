@@ -334,7 +334,9 @@ export default function useWebRTC() {
 
     onMeetingEndedRef.current = onMeetingEnded;
     onKickedRef.current = onKicked;
-    if (socketRef.current) return;
+    if (socketRef.current) {
+      leaveRoom();
+    }
     setError(null);
     try {
       await setupLocalStream({ audio, video });
@@ -352,25 +354,30 @@ export default function useWebRTC() {
 
       socket.on('existing-users', (users) => {
         if (Array.isArray(users)) {
+          const myId = selfSocketIdRef.current || socketRef.current?.id;
           users.forEach((u) => {
-            if (u.socketId !== socketRef.current?.id) connectToPeer(u, true);
+            if (u && u.socketId && u.socketId !== myId) connectToPeer(u, true);
           });
         }
       });
 
       socket.on('user-joined', (user) => {
-        if (user && user.socketId !== socketRef.current?.id) {
+        const myId = selfSocketIdRef.current || socketRef.current?.id;
+        if (user && user.socketId && user.socketId !== myId) {
           connectToPeer(user, false);
         }
       });
 
       socket.on('user-connected', (user) => {
-        if (user && user.socketId !== socketRef.current?.id) {
+        const myId = selfSocketIdRef.current || socketRef.current?.id;
+        if (user && user.socketId && user.socketId !== myId) {
           connectToPeer(user, false);
         }
       });
 
       socket.on('offer', async ({ from, sdp }) => {
+        const myId = selfSocketIdRef.current || socketRef.current?.id;
+        if (!from || from === myId) return;
         try {
           let entry = peersRef.current.get(from);
           if (!entry) {
@@ -390,6 +397,8 @@ export default function useWebRTC() {
       });
 
       socket.on('answer', async ({ from, sdp }) => {
+        const myId = selfSocketIdRef.current || socketRef.current?.id;
+        if (!from || from === myId) return;
         try {
           const entry = peersRef.current.get(from);
           const pc = entry?.pc;
@@ -402,6 +411,8 @@ export default function useWebRTC() {
       });
 
       socket.on('ice-candidate', async ({ from, candidate }) => {
+        const myId = selfSocketIdRef.current || socketRef.current?.id;
+        if (!from || from === myId) return;
         try {
           const entry = peersRef.current.get(from);
           if (!entry || !entry.pc || !candidate) return;
@@ -422,8 +433,18 @@ export default function useWebRTC() {
       });
 
       socket.on('room-state', (list) => {
-        setParticipants(list);
+        if (!Array.isArray(list)) return;
+        const myId = selfSocketIdRef.current || socketRef.current?.id;
+        const uniqueMap = new Map();
         list.forEach((p) => {
+          if (p && p.socketId && p.socketId !== myId) {
+            uniqueMap.set(p.socketId, p);
+          }
+        });
+        const deduplicatedList = Array.from(uniqueMap.values());
+        setParticipants(deduplicatedList);
+
+        deduplicatedList.forEach((p) => {
           const entry = peersRef.current.get(p.socketId);
           if (entry) {
             entry.meta = { ...entry.meta, ...p };
@@ -485,13 +506,21 @@ export default function useWebRTC() {
       setSelfName(userName);
       setIsHost(res.isHost);
       setRoomId(rid);
-      const participantList = res.participants || [];
+      const myId = socketRef.current?.id || selfSocketIdRef.current;
+      const rawParticipants = res.participants || [];
+      const uniqueMap = new Map();
+      rawParticipants.forEach((p) => {
+        if (p && p.socketId && p.socketId !== myId) {
+          uniqueMap.set(p.socketId, p);
+        }
+      });
+      const participantList = Array.from(uniqueMap.values());
       setParticipants(participantList);
       setConnected(true);
 
       // Auto-connect to all participants who joined before this student (e.g. Sir/Teacher and earlier students)
       participantList.forEach((p) => {
-        if (p.socketId && p.socketId !== socketRef.current?.id) {
+        if (p.socketId && p.socketId !== myId) {
           connectToPeer(p, true);
         }
       });
