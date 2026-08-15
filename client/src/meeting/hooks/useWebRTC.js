@@ -165,7 +165,8 @@ export default function useWebRTC() {
   const connectToPeer = useCallback(
     async (user, initiate) => {
       const targetId = user.socketId;
-      if (!targetId || peersRef.current.has(targetId)) return;
+      const myId = selfSocketIdRef.current || socketRef.current?.id;
+      if (!targetId || (myId && targetId === myId) || peersRef.current.has(targetId)) return;
 
       const pc = new RTCPeerConnection(RTC_CONFIG);
       localStreamRef.current?.getTracks().forEach((track) => pc.addTrack(track, localStreamRef.current));
@@ -546,11 +547,15 @@ export default function useWebRTC() {
       setSelfName(userName);
       setIsHost(res.isHost);
       setRoomId(rid);
+      if (socketRef.current?.id) {
+        selfSocketIdRef.current = socketRef.current.id;
+        setSelfSocketId(socketRef.current.id);
+      }
       const myId = socketRef.current?.id || selfSocketIdRef.current;
       const rawParticipants = res.participants || [];
       const uniqueMap = new Map();
       rawParticipants.forEach((p) => {
-        if (p && p.socketId && p.socketId !== myId) {
+        if (p && p.socketId && (!myId || p.socketId !== myId)) {
           uniqueMap.set(p.socketId, p);
         }
       });
@@ -560,7 +565,7 @@ export default function useWebRTC() {
 
       // Auto-connect to all participants who joined before this student (e.g. Sir/Teacher and earlier students)
       participantList.forEach((p) => {
-        if (p.socketId && p.socketId !== myId) {
+        if (p.socketId && (!myId || p.socketId !== myId)) {
           connectToPeer(p, true);
         }
       });

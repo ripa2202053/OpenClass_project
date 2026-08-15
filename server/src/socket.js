@@ -95,8 +95,7 @@ export function attachSignaling(httpServer) {
       const otherUsers = Array.from(room.values()).filter((u) => u.socketId !== socket.id);
       socket.emit('all-users', otherUsers);
 
-      const participants = Array.from(room.values());
-      ack?.({ ok: true, isHost, participants });
+      ack?.({ ok: true, isHost, participants: otherUsers });
       broadcastRoomState(cleanRoom);
     });
 
