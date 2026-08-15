@@ -13,11 +13,24 @@ export default function VideoGrid({
   isHost = false,
   speakingId = null,
 }) {
-  const remoteParticipants = participants.filter((p) => {
-    if (!p) return false;
-    const pId = p.socketId || p.id;
-    if (selfSocketId && pId === selfSocketId) return false;
-    return pId !== 'self';
+  const seenKeys = new Set();
+  const remoteParticipants = [];
+
+  (participants || []).forEach((p) => {
+    if (!p) return;
+    const pId = p.socketId || p.id || p.userId || p.uid;
+    const pUserId = p.userId || p.uid;
+    if (!pId) return;
+    if (selfSocketId && pId === selfSocketId) return;
+    if (pId === 'self') return;
+
+    const key = String(pId);
+    if (seenKeys.has(key) || (pUserId && seenKeys.has(`u_${pUserId}`))) {
+      return;
+    }
+    seenKeys.add(key);
+    if (pUserId) seenKeys.add(`u_${pUserId}`);
+    remoteParticipants.push(p);
   });
 
   const tiles = [

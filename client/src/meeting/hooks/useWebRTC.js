@@ -61,7 +61,19 @@ export default function useWebRTC() {
 
   const publish = useCallback(() => {
     const list = [];
+    const seenSocketIds = new Set();
+    const seenUserIds = new Set();
+    const myId = selfSocketIdRef.current || socketRef.current?.id;
+
     peersRef.current.forEach((entry, socketId) => {
+      if (!socketId || socketId === myId) return;
+      const userId = entry?.meta?.userId || entry?.meta?.uid;
+      if (seenSocketIds.has(socketId) || (userId && seenUserIds.has(userId))) {
+        return;
+      }
+      seenSocketIds.add(socketId);
+      if (userId) seenUserIds.add(userId);
+
       if (entry.meta) {
         list.push({
           socketId,
@@ -89,6 +101,8 @@ export default function useWebRTC() {
       }
       peersRef.current.delete(socketId);
       stopMonitor(socketId);
+      setParticipants((prev) => prev.filter((p) => p.socketId !== socketId && p.id !== socketId));
+      setRemoteStreams((prev) => prev.filter((p) => p.socketId !== socketId && p.id !== socketId));
       publish();
     },
     [publish, stopMonitor],
