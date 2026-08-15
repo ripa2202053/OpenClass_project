@@ -35,6 +35,7 @@ import {
   getDownloadURL,
 } from 'firebase/storage';
 import { safeOnSnapshot, isQuotaExceededError, createRequestCache } from './utils/firestoreGuard.js';
+import { fetchWithAuth, API_BASE_URL } from './utils/api.js';
 
 const classworkCache = createRequestCache(30000);
 
@@ -160,7 +161,7 @@ let userClassrooms = [];
 let calendarDate = new Date();
 let calendarView = 'month';
 
-export async function fetchWithAuth(url, options = {}) {
+async function localFetchWithAuth(url, options = {}) {
   const user = getAuth().currentUser;
   let token = '';
   if (user) {
@@ -4547,6 +4548,28 @@ document.getElementById('form-create-assignment')?.addEventListener('submit', as
     document.getElementById('create-assignment-file-list').innerHTML = '';
     document.getElementById('modal-create-assignment').style.display = 'none';
     editingAssignmentId = null;
+
+    // Immediately refresh subscription & classroom selector so the published assignment card appears on screen!
+    currentAssignmentClassId = cId;
+    if (assignmentsUnsub) { assignmentsUnsub(); assignmentsUnsub = null; }
+    assignmentsUnsub = subscribeAssignments(cId, renderAssignments);
+
+    if (document.getElementById('assignment-class-selector')) {
+      buildAssignmentClassroomSelector('assignment-class-selector', (selId) => {
+        currentAssignmentClassId = selId;
+        if (assignmentsUnsub) { assignmentsUnsub(); assignmentsUnsub = null; }
+        if (selId) {
+          assignmentsUnsub = subscribeAssignments(selId, renderAssignments);
+        } else {
+          const cIds = (userClassrooms || []).map(c => c.classroomId || c.id).filter(Boolean);
+          if (cIds.length > 0) {
+            assignmentsUnsub = subscribeAllClassroomsAssignments(cIds, renderAssignments);
+          } else {
+            renderAssignments([]);
+          }
+        }
+      });
+    }
   } catch (err) {
     if (alertEl) {
       alertEl.className = 'alert error'; alertEl.textContent = err.message; alertEl.style.display = 'block';
