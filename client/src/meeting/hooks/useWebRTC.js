@@ -364,7 +364,7 @@ export default function useWebRTC() {
         connectToPeer(user, false);
       };
 
-      socket.on('existing-users', (users) => {
+      const handleUsersList = (users) => {
         if (Array.isArray(users)) {
           const myId = selfSocketIdRef.current || socketRef.current?.id;
           users.forEach((u) => {
@@ -372,7 +372,10 @@ export default function useWebRTC() {
             if (sId && sId !== myId) connectToPeer(u, true);
           });
         }
-      });
+      };
+
+      socket.on('all-users', handleUsersList);
+      socket.on('existing-users', handleUsersList);
 
       socket.on('user-joined', handleUserJoined);
       socket.on('user-connected', handleUserJoined);

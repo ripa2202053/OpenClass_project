@@ -92,6 +92,9 @@ export function attachSignaling(httpServer) {
 
       socket.to(cleanRoom).emit('user-joined', participant);
 
+      const otherUsers = Array.from(room.values()).filter((u) => u.socketId !== socket.id);
+      socket.emit('all-users', otherUsers);
+
       const participants = Array.from(room.values());
       ack?.({ ok: true, isHost, participants });
       broadcastRoomState(cleanRoom);
@@ -170,6 +173,7 @@ export function attachSignaling(httpServer) {
       const room = rooms.get(roomId);
       if (room?.has(socket.id)) {
         room.delete(socket.id);
+        socket.to(roomId).emit('user-left', socket.id);
         socket.to(roomId).emit('user-disconnected', { socketId: socket.id });
         if (room.size === 0) {
           rooms.delete(roomId);
