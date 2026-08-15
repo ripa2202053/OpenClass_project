@@ -69,9 +69,9 @@ import {
 } from './meetingService.js';
 import { openInAppMeeting as mountMeetingUi, closeInAppMeeting, isMeetingOpen } from './meeting/index.jsx';import {
   createAssignment, updateAssignment, deleteAssignment,
-  publishAssignment, closeAssignment,
+  publishAssignment, closeAssignment, unsubmitAssignment,
   subscribeAssignments, submitAssignment, gradeAssignment,
-  subscribeSubmissions, subscribeMySubmission, uploadFile
+  subscribeSubmissions, subscribeMySubmission, subscribeAllClassroomsAssignments, uploadFile
 } from './assignmentService.js';
 import {
   createQuiz, updateQuiz, deleteQuiz, publishQuiz, closeQuiz,
@@ -3932,6 +3932,95 @@ let analyticsClassData = {};
 
 let countdownIntervals = [];
 
+// Student filter tabs + per-assignment submission status cache
+let assignmentFilter = 'all';
+const mySubmissionsMap = {};
+let lastAssignmentsData = null;
+let assignmentsFilterTabsBuilt = false;
+// Edit-mode state for the create/edit modal
+let editingAssignmentId = null;
+// Pending link entries for the submit modal and the detail "Your Work" panel
+let pendingSubmitLinks = [];
+let pendingDetailFiles = [];
+let pendingDetailLinks = [];
+
+function toMillis(ts) {
+  if (!ts) return null;
+  if (typeof ts.toMillis === 'function') return ts.toMillis();
+  if (ts instanceof Date) return ts.getTime();
+  const n = Date.parse(ts);
+  return isNaN(n) ? null : n;
+}
+
+function toDatetimeLocal(ms) {
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function buildAssignmentFilterTabs() {
+  const container = document.getElementById('assignment-filter-tabs');
+  if (!container) return;
+  container.innerHTML = '';
+  const tabs = [['all', 'All'], ['todo', 'To-Do'], ['submitted', 'Submitted'], ['graded', 'Graded'], ['missing', 'Missing']];
+  tabs.forEach(([key, label]) => {
+    const btn = document.createElement('button');
+    btn.className = 'class-tab-btn';
+    btn.textContent = label;
+    if (key === assignmentFilter) btn.classList.add('active');
+    btn.addEventListener('click', () => {
+      assignmentFilter = key;
+      container.querySelectorAll('.class-tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (lastAssignmentsData) renderAssignments(lastAssignmentsData);
+    });
+    container.appendChild(btn);
+  });
+}
+
+function assignmentIsOverdue(a) {
+  const due = toMillis(a.dueDate);
+  return !!due && due < Date.now();
+}
+
+async function ensureMySubmissions(assignments, uid) {
+  if (!uid) return;
+  const db = getFirestore();
+  await Promise.all((assignments || []).map(async a => {
+    try {
+      const cId = currentAssignmentClassId || a.classroomId;
+      const snap = await getDoc(doc(db, 'classrooms', cId, 'assignments', a.id, 'submissions', uid));
+      mySubmissionsMap[a.id] = snap.exists() ? { id: snap.id, ...snap.data() } : null;
+    } catch (e) { mySubmissionsMap[a.id] = null; }
+  }));
+}
+
+function filterAssignmentsForStudent(list) {
+  if (assignmentFilter === 'all') return list;
+  return (list || []).filter(a => {
+    const sub = mySubmissionsMap[a.id];
+    const overdue = assignmentIsOverdue(a);
+    switch (assignmentFilter) {
+      case 'todo': return !sub && !overdue;
+      case 'submitted': return !!sub && sub.status !== 'graded';
+      case 'graded': return !!sub && sub.status === 'graded';
+      case 'missing': return !sub && overdue;
+      default: return true;
+    }
+  });
+}
+
+function emptyAssignmentFilterState() {
+  const msgs = {
+    todo: 'Nothing to do — you\'re all caught up!',
+    submitted: 'You haven\'t submitted anything yet.',
+    graded: 'No graded assignments yet.',
+    missing: 'No missing assignments — great job!',
+  };
+  return `<div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">${msgs[assignmentFilter] || 'No assignments match this filter.'}</div>`;
+}
+
+
 function clearAssignmentCountdowns() {
   countdownIntervals.forEach(c => clearInterval(c));
   countdownIntervals = [];
@@ -3979,173 +4068,348 @@ function createCountdownTimer(el, dueDate) {
 
 function renderFileList(files) {
   if (!files || files.length === 0) return '';
-  return files.map(f =>
-    `<a href="${f.url}" target="_blank" class="file-chip" title="${f.name}">
-      <i class="material-icons" style="font-size:14px;">attach_file</i> ${f.name.length > 20 ? f.name.substring(0, 17) + '...' : f.name}
-    </a>`
-  ).join('');
+  return files.map(f => {
+    const fName = escapeHtml(f.originalName || f.name || f.fileName || 'File');
+    let rawUrl = f.url || '#';
+    if (rawUrl.startsWith('/api/')) {
+      rawUrl = API_BASE_URL + rawUrl;
+    }
+    const fUrl = escapeHtml(rawUrl);
+    return `<a href="${fUrl}" target="_blank" rel="noopener" class="file-chip" title="${fName}">
+      <i class="material-icons" style="font-size:14px;">attach_file</i> ${fName.length > 24 ? fName.substring(0, 21) + '...' : fName}
+    </a>`;
+  }).join('');
 }
 
-function buildAssignmentClassroomSelector(containerId, onClick) {
+function buildAssignmentClassroomSelector(containerId, onClick, overrideClassrooms) {
   const container = document.getElementById(containerId);
   if (!container) return;
+  const listToUse = (overrideClassrooms && overrideClassrooms.length > 0) ? overrideClassrooms : (userClassrooms || []);
   container.innerHTML = '';
-  const allBtn = document.createElement('button');
-  allBtn.className = 'class-tab-btn';
-  allBtn.textContent = 'All Classrooms';
-  allBtn.addEventListener('click', () => { onClick(''); container.querySelectorAll('.class-tab-btn').forEach(b => b.classList.remove('active')); allBtn.classList.add('active'); });
-  container.appendChild(allBtn);
-  userClassrooms.forEach(c => {
-    const btn = document.createElement('button');
-    btn.className = 'class-tab-btn';
-    btn.textContent = c.classroomName;
-    btn.addEventListener('click', () => {
-      onClick(c.classroomId);
-      container.querySelectorAll('.class-tab-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    });
-    container.appendChild(btn);
-  });
-  if (container.firstChild) container.firstChild.classList.add('active');
-}
+  container.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;align-items:center;';
 
-function renderAssignments(assignments) {
+  // 1. "All Classrooms" Sleek Compact Pill Card
+  const allCard = document.createElement('div');
+  allCard.className = 'assignment-course-card' + (currentAssignmentClassId ? '' : ' active');
+  allCard.style.cssText = currentAssignmentClassId
+    ? 'cursor:pointer;background:var(--card-bg);border:1px solid var(--border);border-radius:20px;padding:8px 16px;display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--text-main);transition:all 0.2s ease;'
+    : 'cursor:pointer;background:rgba(59,130,246,0.14);border:1.5px solid var(--primary);border-radius:20px;padding:8px 16px;display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--primary);transition:all 0.2s ease;box-shadow:0 2px 8px rgba(59,130,246,0.2);';
+  allCard.innerHTML = `<i class="material-icons" style="font-size:18px;">apps</i> All Classrooms`;
+  allCard.addEventListener('click', () => {
+    onClick('');
+    container.querySelectorAll('.assignment-course-card').forEach(c => {
+      c.classList.remove('active');
+      c.style.background = 'var(--card-bg)';
+      c.style.border = '1px solid var(--border)';
+      c.style.color = 'var(--text-main)';
+      c.style.boxShadow = 'none';
+    });
+    allCard.classList.add('active');
+    allCard.style.background = 'rgba(59,130,246,0.14)';
+    allCard.style.border = '1.5px solid var(--primary)';
+    allCard.style.color = 'var(--primary)';
+    allCard.style.boxShadow = '0 2px 8px rgba(59,130,246,0.2)';
+  });
+  container.appendChild(allCard);
+
+  // 2. Individual Classroom Compact Cards
+  listToUse.forEach((c, idx) => {
+    const card = document.createElement('div');
+    const cId = c.classroomId || c.id;
+    const name = c.classroomName || c.name || 'Classroom';
+    const isActive = currentAssignmentClassId === cId;
+    
+    const colors = ['#3b82f6', '#10b981', '#a855f7', '#f59e0b', '#ec4899', '#06b6d4'];
+    const color = colors[idx % colors.length];
+
+    card.className = 'assignment-course-card' + (isActive ? ' active' : '');
+    card.style.cssText = isActive
+      ? `cursor:pointer;background:${color}18;border:1.5px solid ${color};border-radius:20px;padding:8px 16px;display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:${color};transition:all 0.2s ease;box-shadow:0 2px 8px ${color}30;`
+      : 'cursor:pointer;background:var(--card-bg);border:1px solid var(--border);border-radius:20px;padding:8px 16px;display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--text-main);transition:all 0.2s ease;';
+    card.innerHTML = `
+      <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;"></span>
+      <span title="${name}">${name}</span>
+    `;
+
+    card.addEventListener('click', () => {
+      onClick(cId);
+      container.querySelectorAll('.assignment-course-card').forEach(c => {
+        c.classList.remove('active');
+        c.style.background = 'var(--card-bg)';
+        c.style.border = '1px solid var(--border)';
+        c.style.color = 'var(--text-main)';
+        c.style.boxShadow = 'none';
+      });
+      card.classList.add('active');
+      card.style.background = `${color}18`;
+      card.style.border = `1.5px solid ${color}`;
+      card.style.color = color;
+      card.style.boxShadow = `0 2px 8px ${color}30`;
+    });
+    container.appendChild(card);
+  });
+}
+async function renderAssignments(assignments) {
   const container = document.getElementById('assignment-list');
   if (!container) return;
+  lastAssignmentsData = assignments;
   clearAssignmentCountdowns();
+  const isUserTeacher = currentUserProfile && isTeacher(currentUserProfile);
+  const currentUid = getAuth().currentUser?.uid;
+
+  // Student filter tabs (hidden for teachers)
+  const tabsEl = document.getElementById('assignment-filter-tabs');
+  if (tabsEl) {
+    tabsEl.style.display = isUserTeacher ? 'none' : 'flex';
+    if (!isUserTeacher && !assignmentsFilterTabsBuilt) {
+      buildAssignmentFilterTabs();
+      assignmentsFilterTabsBuilt = true;
+    } else if (isUserTeacher) {
+      assignmentFilter = 'all';
+    }
+  }
+
   if (!assignments || assignments.length === 0) {
     container.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">No assignments yet.</div>';
     return;
   }
+
+  // Students: resolve per-assignment submission status, then apply the active filter
+  let list = assignments;
+  if (!isUserTeacher) {
+    await ensureMySubmissions(assignments, currentUid);
+    list = filterAssignmentsForStudent(assignments);
+  }
+
   container.innerHTML = '';
-  const isUserTeacher = currentUserProfile && isTeacher(currentUserProfile);
-  const currentUid = getAuth().currentUser?.uid;
-  assignments.forEach(a => {
-    const dueMillis = a.dueDate ? a.dueDate.toMillis() : null;
+  if (list.length === 0) {
+    container.innerHTML = emptyAssignmentFilterState();
+    return;
+  }
+
+  list.forEach(a => {
+    const dueMillis = a.dueDate ? (a.dueDate.toMillis ? a.dueDate.toMillis() : new Date(a.dueDate).getTime()) : null;
     const dueDate = dueMillis ? new Date(dueMillis) : null;
     const dueStr = dueDate ? dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'No due date';
     const isOverdue = dueMillis ? dueMillis < Date.now() : false;
     const isClosed = a.status === 'closed';
-    const isDraft = a.status === 'draft';
-    const isLate = a.late;
-    const statusHtml = getStatusBadge(a.status, dueMillis, isLate);
+    const cId = currentAssignmentClassId || a.classroomId;
+
     const card = document.createElement('div');
     card.className = 'assignment-card';
-    card.innerHTML =
-      '<div class="assignment-card-header"><h3>' + a.title + '</h3>' + statusHtml + '</div>' +
-      (a.description ? '<div class="assignment-card-desc">' + a.description + '</div>' : '') +
-      '<div class="assignment-card-meta">' +
-        '<span><i class="material-icons" style="font-size:16px;">calendar_today</i> ' + dueStr + '</span>' +
-        '<span><i class="material-icons" style="font-size:16px;">grade</i> ' + (a.maxMarks || 0) + ' marks</span>' +
-        '<span class="countdown-display">' + getCountdownHtml(dueMillis) + '</span>' +
-      '</div>' +
-      ((a.files && a.files.length > 0) ? '<div class="assignment-card-files">' + renderFileList(a.files) + '</div>' : '') +
-      '<div class="assignment-card-actions"></div>';
+    card.style.cssText = 'position:relative;background:var(--card-bg);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px;box-shadow:0 4px 12px rgba(0,0,0,0.05);';
+
+    const targetClass = userClassrooms.find(c => (c.id || c.classroomId) === cId);
+    const classNameTag = targetClass ? (targetClass.classroomName || targetClass.name || '') : '';
+
+    card.innerHTML = `
+      <div class="assignment-card-header" style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px;">
+        <div style="min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+            ${classNameTag ? `<span class="badge-status" style="background:rgba(59,130,246,0.12);color:#60a5fa;font-size:11px;font-weight:600;">${escapeHtml(classNameTag)}</span>` : ''}
+          </div>
+          <h3 class="assignment-title-link" style="margin:0;font-size:17px;font-weight:700;color:var(--text-main);cursor:pointer;">${escapeHtml(a.title)}</h3>
+        </div>
+        <div class="card-status-badge-container">${getStatusBadge(a.status, dueMillis, a.late)}</div>
+      </div>
+      ${a.description ? `<div class="assignment-card-desc" style="font-size:14px;color:var(--text-muted);margin-bottom:12px;line-height:1.5;">${a.description}</div>` : ''}
+      <div class="assignment-card-meta" style="display:flex;gap:16px;align-items:center;font-size:13px;color:var(--text-muted);margin-bottom:12px;">
+        <span><i class="material-icons" style="font-size:16px;vertical-align:-3px;">calendar_today</i> ${dueStr}</span>
+        <span><i class="material-icons" style="font-size:16px;vertical-align:-3px;">grade</i> ${a.maxMarks || 100} marks</span>
+        <span class="countdown-display">${getCountdownHtml(dueMillis)}</span>
+      </div>
+      ${(a.files && a.files.length > 0) ? `<div class="assignment-card-files" style="margin-bottom:14px;">${renderFileList(a.files)}</div>` : ''}
+      <div class="assignment-teacher-stats-area"></div>
+      <div class="assignment-card-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);"></div>
+    `;
     container.appendChild(card);
+
+    card.querySelector('.assignment-title-link')?.addEventListener('click', () => openAssignmentDetail(cId, a));
+
     const countdownEl = card.querySelector('.countdown-display');
     if (countdownEl && dueMillis && dueMillis > Date.now()) {
       createCountdownTimer(countdownEl, dueMillis);
     }
+
     const actionsDiv = card.querySelector('.assignment-card-actions');
+    const badgeContainer = card.querySelector('.card-status-badge-container');
+    const teacherStatsArea = card.querySelector('.assignment-teacher-stats-area');
+
     if (isUserTeacher) {
+      // 1. Teacher Dashboard: 3 Live Status Counters (Assigned, Submitted, Graded)
+      teacherStatsArea.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0;padding:12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;text-align:center;">
+          <div><div style="font-size:18px;font-weight:800;color:var(--primary);" class="ts-assigned-val">--</div><div style="font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Assigned</div></div>
+          <div><div style="font-size:18px;font-weight:800;color:var(--warning);" class="ts-submitted-val">--</div><div style="font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Turned In</div></div>
+          <div><div style="font-size:18px;font-weight:800;color:var(--success);" class="ts-graded-val">--</div><div style="font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;">Graded</div></div>
+        </div>
+      `;
+
+      if (cId) {
+        subscribeSubmissions(cId, a.id, (submissions) => {
+          const subCount = submissions.length;
+          const gradedCount = submissions.filter(s => s.status === 'graded').length;
+          const targetClassroom = userClassrooms.find(c => (c.id || c.classroomId) === cId);
+          const totalEnrolled = (targetClassroom?.enrolledStudents?.length)
+            || (targetClassroom?.members?.length)
+            || (targetClassroom?.students?.length)
+            || subCount
+            || 1;
+
+          const assignedEl = teacherStatsArea.querySelector('.ts-assigned-val');
+          const submittedEl = teacherStatsArea.querySelector('.ts-submitted-val');
+          const gradedEl = teacherStatsArea.querySelector('.ts-graded-val');
+          if (assignedEl) assignedEl.textContent = totalEnrolled;
+          if (submittedEl) submittedEl.textContent = subCount;
+          if (gradedEl) gradedEl.textContent = gradedCount;
+        });
+      }
+
       if (a.status !== 'published') {
         const pubBtn = document.createElement('button');
-        pubBtn.className = 'btn btn-outline'; pubBtn.style.cssText = 'padding:4px 10px;font-size:0.8rem;color:var(--success);';
-        pubBtn.innerHTML = '<i class="material-icons" style="font-size:14px;">publish</i> Publish';
+        pubBtn.className = 'btn btn-outline'; pubBtn.style.cssText = 'padding:6px 12px;font-size:0.8rem;color:var(--success);';
+        pubBtn.innerHTML = '<i class="material-icons" style="font-size:15px;vertical-align:-3px;">publish</i> Publish';
         pubBtn.addEventListener('click', async () => {
-          if (!confirm('Publish this assignment? Students will be able to submit.')) return;
-          await publishAssignment(currentAssignmentClassId || a.classroomId, a.id);
+          if (!confirm('Publish this assignment? Enrolled students will receive real-time notifications.')) return;
+          await publishAssignment(cId, a.id, currentUserProfile);
         });
         actionsDiv.appendChild(pubBtn);
       }
       if (a.status === 'published') {
         const closeBtn = document.createElement('button');
-        closeBtn.className = 'btn btn-outline'; closeBtn.style.cssText = 'padding:4px 10px;font-size:0.8rem;color:var(--warning);';
-        closeBtn.innerHTML = '<i class="material-icons" style="font-size:14px;">block</i> Close';
+        closeBtn.className = 'btn btn-outline'; closeBtn.style.cssText = 'padding:6px 12px;font-size:0.8rem;color:var(--warning);';
+        closeBtn.innerHTML = '<i class="material-icons" style="font-size:15px;vertical-align:-3px;">block</i> Close';
         closeBtn.addEventListener('click', async () => {
           if (!confirm('Close this assignment? No more submissions will be accepted.')) return;
-          await closeAssignment(currentAssignmentClassId || a.classroomId, a.id);
+          await closeAssignment(cId, a.id);
         });
         actionsDiv.appendChild(closeBtn);
       }
       if (a.status === 'published' || a.status === 'closed') {
         const viewBtn = document.createElement('button');
-        viewBtn.className = 'btn btn-outline'; viewBtn.style.cssText = 'padding:4px 10px;font-size:0.8rem;';
-        viewBtn.innerHTML = '<i class="material-icons" style="font-size:14px;">visibility</i> Submissions';
-        viewBtn.addEventListener('click', () => openViewSubmissions(currentAssignmentClassId || a.classroomId, a));
+        viewBtn.className = 'btn btn-primary'; viewBtn.style.cssText = 'padding:6px 14px;font-size:0.8rem;';
+        viewBtn.innerHTML = '<i class="material-icons" style="font-size:15px;vertical-align:-3px;">visibility</i> View Submissions & Grade';
+        viewBtn.addEventListener('click', () => openViewSubmissions(cId, a));
         actionsDiv.appendChild(viewBtn);
       }
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn btn-outline'; editBtn.style.cssText = 'padding:6px 12px;font-size:0.8rem;';
+      editBtn.innerHTML = '<i class="material-icons" style="font-size:15px;vertical-align:-3px;">edit</i> Edit';
+      editBtn.addEventListener('click', () => openEditAssignment(cId, a));
+      actionsDiv.appendChild(editBtn);
       const delBtn = document.createElement('button');
-      delBtn.className = 'btn btn-outline'; delBtn.style.cssText = 'padding:4px 10px;font-size:0.8rem;color:var(--danger);';
-      delBtn.innerHTML = '<i class="material-icons" style="font-size:14px;">delete</i> Delete';
+      delBtn.className = 'btn btn-outline'; delBtn.style.cssText = 'padding:6px 12px;font-size:0.8rem;color:var(--danger);';
+      delBtn.innerHTML = '<i class="material-icons" style="font-size:15px;vertical-align:-3px;">delete</i> Delete';
       delBtn.addEventListener('click', async () => {
         if (!confirm('Delete this assignment?')) return;
-        await deleteAssignment(currentAssignmentClassId || a.classroomId, a.id);
+        await deleteAssignment(cId, a.id);
       });
       actionsDiv.appendChild(delBtn);
+
     } else {
-      if (isClosed) {
-        const closedMsg = document.createElement('span');
-        closedMsg.style.cssText = 'font-size:13px;color:var(--text-muted);font-style:italic;';
-        closedMsg.textContent = 'Submissions closed';
-        actionsDiv.appendChild(closedMsg);
-      } else if (isDraft) {
-        const draftMsg = document.createElement('span');
-        draftMsg.style.cssText = 'font-size:13px;color:var(--text-muted);font-style:italic;';
-        draftMsg.textContent = 'Not yet published';
-        actionsDiv.appendChild(draftMsg);
-      } else {
-        const subBtn = document.createElement('button');
-        subBtn.className = 'btn btn-primary'; subBtn.style.cssText = 'padding:4px 10px;font-size:0.8rem;';
-        subBtn.innerHTML = '<i class="material-icons" style="font-size:14px;">upload</i> ' + (isOverdue ? 'Submit (Late)' : 'Submit');
-        subBtn.addEventListener('click', () => {
-          document.getElementById('submit-assignment-id').value = a.id;
-          document.getElementById('submit-assignment-classroom').value = currentAssignmentClassId || a.classroomId;
-          document.getElementById('submit-assignment-title').textContent = 'Submit: ' + a.title;
-          document.getElementById('submit-assignment-info').innerHTML =
-            '<strong>' + a.title + '</strong><br>' +
-            '<span style="font-size:13px;color:var(--text-muted);">Due: ' + dueStr + ' &middot; ' + (a.maxMarks || 0) + ' marks</span>';
-          const lateWarn = document.getElementById('submit-assignment-late-warning');
-          if (lateWarn) lateWarn.style.display = isOverdue ? 'block' : 'none';
-          document.getElementById('submit-assignment-alert').style.display = 'none';
-          document.getElementById('modal-submit-assignment').style.display = 'flex';
-        });
-        actionsDiv.appendChild(subBtn);
-      }
-      const cId = currentAssignmentClassId || a.classroomId;
-      if (cId) {
+      // 2. Student Flow: Real-time Status Badges & "Your Work" Turn In Box
+      if (cId && currentUid) {
         subscribeMySubmission(cId, a.id, currentUid, (sub) => {
-          actionsDiv.querySelectorAll('.grade-display, .history-btn, .sub-status').forEach(e => e.remove());
-          if (sub) {
-            const statusEl = document.createElement('div');
-            statusEl.className = 'sub-status';
-            statusEl.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:4px;';
-            const statusText = sub.late ? '⚠ Late' : '✓ Submitted';
-            const statusColor = sub.late ? 'var(--warning)' : 'var(--success)';
-            statusEl.innerHTML = `<span style="font-size:12px;color:${statusColor};font-weight:600;">${statusText}</span>`;
-            if (sub.files && sub.files.length > 0) {
-              statusEl.innerHTML += `<span style="font-size:12px;color:var(--text-muted);">(${sub.files.length} file${sub.files.length > 1 ? 's' : ''})</span>`;
-            }
-            actionsDiv.appendChild(statusEl);
-            if (sub.marks !== null && sub.marks !== undefined) {
-              const ge = document.createElement('span');
-              ge.className = 'grade-display'; ge.style.cssText = 'font-weight:700;color:var(--success);font-size:14px;margin-top:4px;display:inline-block;';
-              ge.textContent = 'Marks: ' + sub.marks + '/' + (a.maxMarks || 0);
-              actionsDiv.appendChild(ge);
-              if (sub.feedback) {
-                const fe = document.createElement('div');
-                fe.className = 'grade-display'; fe.style.cssText = 'font-size:13px;color:var(--text-muted);margin-top:2px;';
-                fe.textContent = 'Feedback: ' + sub.feedback;
-                actionsDiv.appendChild(fe);
+          actionsDiv.innerHTML = '';
+          mySubmissionsMap[a.id] = sub;
+
+          if (badgeContainer) {
+            if (!sub) {
+              if (isOverdue) {
+                badgeContainer.innerHTML = '<span class="badge-status" style="background:rgba(239,68,68,0.15);color:#ef4444;font-weight:700;">🔴 Missing</span>';
+              } else {
+                badgeContainer.innerHTML = '<span class="badge-status" style="background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:700;">🟡 Assigned</span>';
               }
+            } else if (sub.status === 'graded') {
+              badgeContainer.innerHTML = '<span class="badge-status" style="background:rgba(147,51,234,0.15);color:#a855f7;font-weight:700;">🟣 Graded</span>';
+            } else if (sub.late) {
+              badgeContainer.innerHTML = '<span class="badge-status" style="background:rgba(249,115,22,0.15);color:#f97316;font-weight:700;">🟠 Turned in Late</span>';
+            } else {
+              badgeContainer.innerHTML = '<span class="badge-status" style="background:rgba(16,185,129,0.15);color:#10b981;font-weight:700;">🟢 Turned In</span>';
             }
-            if (!isClosed && !isDraft) {
-              const hb = document.createElement('button');
-              hb.className = 'btn btn-outline history-btn'; hb.style.cssText = 'padding:4px 10px;font-size:0.8rem;margin-top:4px;';
-              hb.innerHTML = '<i class="material-icons" style="font-size:14px;">history</i> History';
-              hb.addEventListener('click', () => openSubmissionHistory(cId, a, sub));
-              actionsDiv.appendChild(hb);
+          }
+
+          if (isClosed) {
+            actionsDiv.innerHTML = `
+              <button type="button" class="btn btn-primary" disabled style="padding:6px 14px;font-size:0.85rem;font-weight:700;opacity:0.55;cursor:not-allowed;background:var(--text-muted);">
+                <i class="material-icons" style="font-size:16px;vertical-align:-3px;">block</i> Submissions Closed
+              </button>
+              <span style="font-size:12px;color:var(--text-muted);font-style:italic;width:100%;">Closed by instructor.</span>`;
+            return;
+          }
+
+          if (!sub) {
+            const canSubmit = !isOverdue || a.allowLateSubmissions !== false;
+            const subBtn = document.createElement('button');
+            subBtn.className = 'btn btn-primary';
+            subBtn.style.cssText = 'padding:6px 14px;font-size:0.85rem;font-weight:700;';
+            const btnText = isOverdue ? 'Submit Late' : 'Turn In Work';
+            subBtn.innerHTML = `<i class="material-icons" style="font-size:16px;vertical-align:-3px;">upload</i> ${btnText}`;
+            if (!canSubmit) {
+              subBtn.disabled = true;
+              subBtn.style.opacity = '0.55';
+              subBtn.style.cursor = 'not-allowed';
+              subBtn.style.background = 'var(--text-muted)';
+              subBtn.innerHTML = '<i class="material-icons" style="font-size:16px;vertical-align:-3px;">block</i> Submissions Closed';
+              subBtn.title = 'Late submissions are disabled for this assignment.';
+            } else {
+              subBtn.addEventListener('click', () => {
+                document.getElementById('submit-assignment-id').value = a.id;
+                document.getElementById('submit-assignment-classroom').value = cId;
+                document.getElementById('submit-assignment-title').textContent = (isOverdue ? 'Submit Late: ' : 'Turn In: ') + a.title;
+                document.getElementById('submit-assignment-info').innerHTML =
+                  '<strong>' + a.title + '</strong><br>' +
+                  '<span style="font-size:13px;color:var(--text-muted);">Due: ' + dueStr + ' &middot; ' + (a.maxMarks || 100) + ' marks</span>';
+                const lateWarn = document.getElementById('submit-assignment-late-warning');
+                if (lateWarn) lateWarn.style.display = isOverdue ? 'block' : 'none';
+                document.getElementById('submit-assignment-alert').style.display = 'none';
+                document.getElementById('modal-submit-assignment').style.display = 'flex';
+              });
             }
+            actionsDiv.appendChild(subBtn);
+          } else {
+            const workSummary = document.createElement('div');
+            workSummary.style.cssText = 'width:100%;margin-bottom:8px;font-size:13px;';
+            if (sub.status === 'graded') {
+              workSummary.innerHTML = `
+                <div style="background:rgba(147,51,234,0.06);border:1px solid rgba(147,51,234,0.3);border-radius:10px;padding:12px;margin-bottom:8px;">
+                  <div style="font-weight:800;font-size:15px;color:#a855f7;margin-bottom:4px;">Score: ${sub.marks} / ${a.maxMarks || 100}</div>
+                  ${sub.feedback ? `<div style="color:var(--text-main);font-size:13px;"><strong>Instructor Feedback:</strong> ${sub.feedback}</div>` : ''}
+                </div>
+              `;
+            } else {
+              workSummary.innerHTML = `
+                <div style="color:var(--success);font-weight:600;margin-bottom:4px;">
+                  ✓ Work Turned In ${sub.late ? '<span style="color:var(--warning);">(Late)</span>' : ''}
+                </div>
+                ${sub.files && sub.files.length > 0 ? `<div style="margin-top:4px;">${renderFileList(sub.files)}</div>` : ''}
+              `;
+            }
+            actionsDiv.appendChild(workSummary);
+
+            if (sub.status !== 'graded') {
+              const unsubBtn = document.createElement('button');
+              unsubBtn.className = 'btn btn-outline';
+              unsubBtn.style.cssText = 'padding:6px 12px;font-size:0.8rem;color:var(--danger);border-color:var(--danger);';
+              unsubBtn.innerHTML = '<i class="material-icons" style="font-size:15px;vertical-align:-3px;">undo</i> Unsubmit Work';
+              unsubBtn.addEventListener('click', async () => {
+                if (!confirm('Unsubmit your work? You will be able to upload updated files.')) return;
+                try {
+                  await unsubmitAssignment(cId, a.id, currentUserProfile);
+                  showAppToast('Work unsubmitted successfully.', 'info');
+                } catch (err) {
+                  alert(err.message);
+                }
+              });
+              actionsDiv.appendChild(unsubBtn);
+            }
+
+            const hb = document.createElement('button');
+            hb.className = 'btn btn-outline';
+            hb.style.cssText = 'padding:6px 12px;font-size:0.8rem;';
+            hb.innerHTML = '<i class="material-icons" style="font-size:15px;vertical-align:-3px;">history</i> History';
+            hb.addEventListener('click', () => openSubmissionHistory(cId, a, sub));
+            actionsDiv.appendChild(hb);
           }
         });
       }
@@ -4153,16 +4417,76 @@ function renderAssignments(assignments) {
   });
 }
 
-document.getElementById('btn-create-assignment')?.addEventListener('click', () => {
-  if (!currentAssignmentClassId) { alert('Select a classroom first.'); return; }
+document.getElementById('btn-create-assignment')?.addEventListener('click', async () => {
   if (!currentUserProfile || !isTeacher(currentUserProfile)) {
     alert('Only teachers can create assignments.');
     return;
   }
-  document.getElementById('create-assignment-classroom').value = currentAssignmentClassId;
-  document.getElementById('create-assignment-alert').style.display = 'none';
+
+  const selectEl = document.getElementById('create-assignment-classroom-select');
+  if (selectEl) {
+    selectEl.innerHTML = '';
+    let classroomsToUse = userClassrooms || [];
+    if (classroomsToUse.length === 0 && typeof fetchClassrooms === 'function') {
+      try { classroomsToUse = await fetchClassrooms(currentUserProfile.uid); } catch(e) {}
+    }
+    if (classroomsToUse.length === 0) {
+      alert('No classrooms found. Please create or join a classroom first.');
+      return;
+    }
+    classroomsToUse.forEach(c => {
+      const cId = c.classroomId || c.id;
+      const opt = document.createElement('option');
+      opt.value = cId;
+      opt.textContent = c.classroomName || c.name || 'Classroom';
+      if (currentAssignmentClassId && cId === currentAssignmentClassId) opt.selected = true;
+      selectEl.appendChild(opt);
+    });
+  }
+
+  const hiddenInput = document.getElementById('create-assignment-classroom');
+  if (hiddenInput) hiddenInput.value = currentAssignmentClassId || (userClassrooms && userClassrooms[0] ? (userClassrooms[0].classroomId || userClassrooms[0].id) : '');
+  // Reset to create mode (this modal doubles as the Edit Assignment form)
+  editingAssignmentId = null;
+  const editIdInput = document.getElementById('edit-assignment-id');
+  if (editIdInput) editIdInput.value = '';
+  const titleEl = document.getElementById('create-assignment-modal-title');
+  if (titleEl) titleEl.textContent = 'Create Assignment';
+  const submitBtn = document.getElementById('btn-submit-create-assignment');
+  if (submitBtn) submitBtn.textContent = 'Create Assignment';
+  const selGroup = document.getElementById('create-assignment-classroom-select')?.closest('.form-group');
+  if (selGroup) selGroup.style.display = '';
+  const alertEl = document.getElementById('create-assignment-alert');
+  if (alertEl) alertEl.style.display = 'none';
   document.getElementById('modal-create-assignment').style.display = 'flex';
 });
+
+// Open the create/edit modal prefilled with an existing assignment (teacher Edit flow)
+function openEditAssignment(cId, a) {
+  editingAssignmentId = a.id;
+  document.getElementById('edit-assignment-id').value = a.id;
+  document.getElementById('create-assignment-classroom').value = cId;
+  document.getElementById('create-assignment-title').value = a.title || '';
+  document.getElementById('create-assignment-desc').value = a.description || '';
+  const due = toMillis(a.dueDate);
+  document.getElementById('create-assignment-due').value = due ? toDatetimeLocal(due) : '';
+  document.getElementById('create-assignment-marks').value = a.maxMarks || 100;
+  document.getElementById('create-assignment-status').value = a.status || 'published';
+  document.getElementById('create-assignment-allow-late').checked = a.allowLateSubmissions !== false;
+  const fileList = document.getElementById('create-assignment-file-list');
+  if (fileList) {
+    fileList.innerHTML = (a.files && a.files.length)
+      ? a.files.map(f => `<span class="file-chip" title="${escapeHtml(f.name || '')}"><i class="material-icons" style="font-size:14px;">attach_file</i> ${escapeHtml((f.name || f.url || '').slice(0, 24))}</span>`).join('')
+      : '';
+  }
+  // Lock the target classroom in edit mode (assignment stays in its class)
+  const selGroup = document.getElementById('create-assignment-classroom-select')?.closest('.form-group');
+  if (selGroup) selGroup.style.display = 'none';
+  document.getElementById('create-assignment-modal-title').textContent = 'Edit Assignment';
+  document.getElementById('btn-submit-create-assignment').innerHTML = '<i class="material-icons" style="font-size:15px;vertical-align:-3px;">save</i> Save Changes';
+  document.getElementById('create-assignment-alert').style.display = 'none';
+  document.getElementById('modal-create-assignment').style.display = 'flex';
+}
 
 document.getElementById('form-create-assignment')?.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -4171,25 +4495,63 @@ document.getElementById('form-create-assignment')?.addEventListener('submit', as
   const btn = document.getElementById('btn-submit-create-assignment');
   btn.disabled = true;
   try {
-    const cId = document.getElementById('create-assignment-classroom').value;
+    const selectEl = document.getElementById('create-assignment-classroom-select');
+    const cId = (selectEl && selectEl.value) ? selectEl.value : document.getElementById('create-assignment-classroom').value;
+    if (!cId) {
+      alert('Please select a target classroom from the dropdown.');
+      btn.disabled = false;
+      return;
+    }
     const fi = document.getElementById('create-assignment-files');
     const files = fi.files ? Array.from(fi.files) : [];
     const dd = document.getElementById('create-assignment-due').value;
-    const status = document.getElementById('create-assignment-status').value;
-    await createAssignment(cId, {
-      title: document.getElementById('create-assignment-title').value,
+    const status = document.getElementById('create-assignment-status').value || 'published';
+    const allowLate = document.getElementById('create-assignment-allow-late')?.checked !== false;
+
+    const titleEl = document.getElementById('create-assignment-title');
+    const title = (titleEl.value || '').trim();
+    if (!title) {
+      alertEl.className = 'alert error'; alertEl.textContent = 'Assignment title is required.'; alertEl.style.display = 'block';
+      setTimeout(() => alertEl.style.display = 'none', 4000);
+      btn.disabled = false;
+      return;
+    }
+    const rawMarks = document.getElementById('create-assignment-marks').value;
+    const maxMarks = rawMarks === '' || rawMarks == null ? 100 : Number(rawMarks);
+    if (Number.isNaN(maxMarks) || maxMarks < 1) {
+      alertEl.className = 'alert error'; alertEl.textContent = 'Maximum points must be a positive number (default 100).'; alertEl.style.display = 'block';
+      setTimeout(() => alertEl.style.display = 'none', 4000);
+      btn.disabled = false;
+      return;
+    }
+
+    const payload = {
+      title,
       description: document.getElementById('create-assignment-desc').value,
       dueDate: dd ? new Date(dd) : null,
-      maxMarks: document.getElementById('create-assignment-marks').value,
+      maxMarks,
       files,
       status,
-    }, currentUserProfile);
+      allowLateSubmissions: allowLate,
+    };
+
+    if (editingAssignmentId) {
+      await updateAssignment(cId, editingAssignmentId, payload);
+      showAppToast('Assignment updated successfully.', 'success');
+    } else {
+      await createAssignment(cId, payload, currentUserProfile);
+      showAppToast('Assignment created and published successfully!', 'success');
+    }
+
     document.getElementById('form-create-assignment').reset();
     document.getElementById('create-assignment-file-list').innerHTML = '';
     document.getElementById('modal-create-assignment').style.display = 'none';
+    editingAssignmentId = null;
   } catch (err) {
-    alertEl.className = 'alert error'; alertEl.textContent = err.message; alertEl.style.display = 'block';
-    setTimeout(() => alertEl.style.display = 'none', 4000);
+    if (alertEl) {
+      alertEl.className = 'alert error'; alertEl.textContent = err.message; alertEl.style.display = 'block';
+      setTimeout(() => alertEl.style.display = 'none', 4000);
+    }
   } finally { btn.disabled = false; }
 });
 
@@ -4216,15 +4578,40 @@ document.getElementById('form-submit-assignment')?.addEventListener('submit', as
     const cId = document.getElementById('submit-assignment-classroom').value;
     const fi = document.getElementById('submit-assignment-files');
     const files = fi.files ? Array.from(fi.files) : [];
-    if (files.length === 0) throw new Error('Please select at least one file to submit.');
-    await submitAssignment(cId, aId, currentUserProfile, files);
+    const links = pendingSubmitLinks.length > 0 ? pendingSubmitLinks : [];
+    if (files.length === 0 && links.length === 0) throw new Error('Please add at least one file or link to submit.');
+    await submitAssignment(cId, aId, currentUserProfile, [...files, ...links]);
     document.getElementById('form-submit-assignment').reset();
     document.getElementById('submit-assignment-file-list').innerHTML = '';
+    document.getElementById('submit-assignment-link-list').innerHTML = '';
+    pendingSubmitLinks = [];
     document.getElementById('modal-submit-assignment').style.display = 'none';
   } catch (err) {
     alertEl.className = 'alert error'; alertEl.textContent = err.message; alertEl.style.display = 'block';
     setTimeout(() => alertEl.style.display = 'none', 4000);
   } finally { btn.disabled = false; }
+});
+
+document.getElementById('btn-add-submit-link')?.addEventListener('click', () => {
+  const input = document.getElementById('submit-assignment-link');
+  const list = document.getElementById('submit-assignment-link-list');
+  if (!input || !list) return;
+  const url = (input.value || '').trim();
+  if (!url) return;
+  try { new URL(url); } catch (e) { alert('Please enter a valid URL (include https://).'); return; }
+  pendingSubmitLinks.push({ name: url.replace(/^https?:\/\//, '').slice(0, 30), url });
+  input.value = '';
+  list.innerHTML = pendingSubmitLinks.map((l, i) =>
+    `<span class="file-chip" style="align-items:center;">🔗 ${l.name}
+       <button type="button" class="icon-btn-sm" data-remove-link="${i}" style="margin-left:6px;color:var(--danger);background:none;border:none;cursor:pointer;font-size:16px;">&times;</button>
+     </span>`
+  ).join('');
+  list.querySelectorAll('[data-remove-link]').forEach(b => {
+    b.addEventListener('click', () => {
+      pendingSubmitLinks.splice(Number(b.dataset.removeLink), 1);
+      b.closest('.file-chip')?.remove();
+    });
+  });
 });
 
 document.getElementById('submit-assignment-files')?.addEventListener('change', (e) => {
@@ -4292,6 +4679,234 @@ function openSubmissionHistory(classroomId, assignment, submission) {
 
 // ─── VIEW SUBMISSIONS (Teacher) ─────────────────────────────────
 
+function openAssignmentDetail(classroomId, assignment) {
+  const modal = document.getElementById('modal-assignment-detail');
+  if (!modal || !assignment) return;
+  document.getElementById('assignment-detail-title').textContent = assignment.title || 'Assignment';
+  renderAssignmentDetailMain(classroomId, assignment);
+  pendingDetailFiles = [];
+  pendingDetailLinks = [];
+  modal.style.display = 'flex';
+
+  const isUserTeacher = currentUserProfile && isTeacher(currentUserProfile);
+  if (isUserTeacher) {
+    renderAssignmentDetailTeacher(classroomId, assignment);
+    return;
+  }
+  // Student: live "Your Work" panel
+  const currentUid = getAuth().currentUser?.uid;
+  if (!currentUid) return;
+  const workUnsub = subscribeMySubmission(classroomId, assignment.id, currentUid, (sub) => {
+    renderAssignmentWorkPanel(classroomId, assignment, sub);
+  });
+  const closeCleanup = () => { if (typeof workUnsub === 'function') workUnsub(); };
+  document.getElementById('btn-detail-close').addEventListener('click', closeCleanup, { once: true });
+  modal.addEventListener('click', function onBackdrop(e) {
+    if (e.target === modal) {
+      closeCleanup();
+      modal.removeEventListener('click', onBackdrop);
+    }
+  });
+}
+
+function renderAssignmentDetailMain(cId, a) {
+  const el = document.getElementById('assignment-detail-main');
+  if (!el) return;
+  const dueMillis = toMillis(a.dueDate);
+  const dueStr = dueMillis
+    ? new Date(dueMillis).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'No due date';
+  const points = a.maxMarks || 100;
+  const isOverdue = dueMillis ? dueMillis < Date.now() : false;
+  const dueChipColor = isOverdue ? 'var(--danger)' : 'var(--text-muted)';
+  el.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      <div>
+        <div style="font-size:22px;font-weight:800;color:var(--text-main);line-height:1.3;margin-bottom:8px;">${escapeHtml(a.title)}</div>
+        ${a.createdByName ? `<div style="font-size:13px;color:var(--text-muted);"><span style="font-weight:600;color:var(--text-main);">${escapeHtml(a.createdByName)}</span> &middot; ${escapeHtml((a.classroomName) || 'Classroom')}</div>` : ''}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <span class="badge-status" style="background:rgba(147,51,234,0.12);color:#a855f7;font-weight:700;"><i class="material-icons" style="font-size:14px;vertical-align:-3px;">grade</i> ${points} points</span>
+        <span class="badge-status" style="background:${isOverdue ? 'rgba(239,68,68,0.12)' : 'rgba(59,130,246,0.12)'};color:${dueChipColor};font-weight:700;"><i class="material-icons" style="font-size:14px;vertical-align:-3px;">event</i> Due ${dueStr}</span>
+      </div>
+      ${a.description ? `<div style="background:var(--bg-color);border:1px solid var(--border);border-radius:12px;padding:16px;font-size:14px;color:var(--text-main);line-height:1.65;white-space:pre-wrap;">${renderNoticeText(a.description)}</div>` : ''}
+      ${(a.files && a.files.length > 0) ? `<div><div style="font-size:12px;color:var(--text-muted);font-weight:600;margin-bottom:8px;">Instructions / Resources</div><div style="display:flex;flex-wrap:wrap;gap:8px;">${renderFileList(a.files)}</div></div>` : ''}
+    </div>
+  `;
+}
+
+function renderAssignmentDetailTeacher(cId, a) {
+  const el = document.getElementById('assignment-detail-work');
+  if (!el) return;
+  el.innerHTML = `
+    <div style="font-weight:800;font-size:15px;color:var(--text-main);margin-bottom:12px;">Teacher View</div>
+    <div style="background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.25);border-radius:12px;padding:14px;font-size:13px;color:var(--text-muted);line-height:1.7;">
+      Review the class roster, turn-in status and grade each student's work from here.
+    </div>
+    <button type="button" id="detail-teacher-view-subs" class="btn btn-primary" style="width:100%;margin-top:14px;padding:10px;"><i class="material-icons" style="font-size:16px;vertical-align:-3px;">visibility</i> View Submissions &amp; Grade</button>
+    <button type="button" id="detail-teacher-edit" class="btn btn-outline" style="width:100%;margin-top:8px;padding:9px;"><i class="material-icons" style="font-size:16px;vertical-align:-3px;">edit</i> Edit Assignment</button>
+  `;
+  el.querySelector('#detail-teacher-view-subs')?.addEventListener('click', () => {
+    document.getElementById('modal-assignment-detail').style.display = 'none';
+    openViewSubmissions(cId, a);
+  });
+  el.querySelector('#detail-teacher-edit')?.addEventListener('click', () => {
+    document.getElementById('modal-assignment-detail').style.display = 'none';
+    openEditAssignment(cId, a);
+  });
+}
+
+function renderAssignmentWorkPanel(cId, a, sub) {
+  const el = document.getElementById('assignment-detail-work');
+  if (!el) return;
+  const dueMillis = toMillis(a.dueDate);
+  const isOverdue = dueMillis ? dueMillis < Date.now() : false;
+  const isClosed = a.status === 'closed';
+  const dueStr = dueMillis
+    ? new Date(dueMillis).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'No due date';
+
+  el.innerHTML = `
+    <div style="font-weight:800;font-size:15px;color:var(--text-main);margin-bottom:4px;">Your Work</div>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Due ${dueStr} &middot; ${a.maxMarks || 100} points</div>
+    <div id="detail-work-status"></div>
+    <div id="detail-work-files" style="margin:10px 0;"></div>
+    <div id="detail-work-tools" style="margin-top:12px;"></div>
+  `;
+  const statusEl = el.querySelector('#detail-work-status');
+  const filesEl = el.querySelector('#detail-work-files');
+  const toolsEl = el.querySelector('#detail-work-tools');
+
+  if (!sub) {
+    statusEl.innerHTML = isOverdue
+      ? '<span class="badge-status" style="background:rgba(239,68,68,0.15);color:#ef4444;font-weight:700;">🔴 Missing</span>'
+      : '<span class="badge-status" style="background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:700;">🟡 Pending</span>';
+  } else if (sub.status === 'graded') {
+    statusEl.innerHTML = '<span class="badge-status" style="background:rgba(147,51,234,0.15);color:#a855f7;font-weight:700;">🟣 Graded</span>';
+  } else if (sub.late) {
+    statusEl.innerHTML = '<span class="badge-status" style="background:rgba(249,115,22,0.15);color:#f97316;font-weight:700;">🟠 Turned In Late</span>';
+  } else {
+    statusEl.innerHTML = '<span class="badge-status" style="background:rgba(16,185,129,0.15);color:#10b981;font-weight:700;">🟢 Turned In</span>';
+  }
+
+  // Graded view: final score + feedback; no upload tools.
+  if (sub && sub.status === 'graded') {
+    if (sub.files && sub.files.length > 0) {
+      filesEl.innerHTML = `<div style="font-size:12px;color:var(--text-muted);font-weight:600;margin-bottom:4px;">Submitted:</div><div style="display:flex;flex-wrap:wrap;gap:8px;">${renderFileList(sub.files)}</div>`;
+    }
+    toolsEl.innerHTML = `
+      <div style="background:rgba(147,51,234,0.06);border:1px solid rgba(147,51,234,0.3);border-radius:12px;padding:16px;">
+        <div style="font-weight:800;font-size:24px;color:#a855f7;">${sub.marks ?? '—'} <span style="font-size:14px;font-weight:600;color:var(--text-muted);">/ ${a.maxMarks || 100}</span></div>
+        ${sub.feedback ? `<div style="margin-top:10px;font-size:13px;color:var(--text-main);"><strong>Instructor Feedback:</strong><p style="margin:4px 0 0;color:var(--text-muted);line-height:1.55;white-space:pre-wrap;">${renderNoticeText(sub.feedback)}</p></div>` : ''}
+      </div>`;
+    return;
+  }
+
+  if (isClosed) {
+    toolsEl.innerHTML = `
+      <button type="button" class="btn btn-primary" disabled style="width:100%;padding:10px;opacity:0.55;cursor:not-allowed;background:var(--text-muted);">
+        <i class="material-icons" style="font-size:16px;vertical-align:-3px;">block</i> Submissions Closed
+      </button>`;
+    return;
+  }
+
+  if (!sub) {
+    const canSubmit = !isOverdue || a.allowLateSubmissions !== false;
+    if (!canSubmit) {
+      toolsEl.innerHTML = `
+        <button type="button" class="btn btn-primary" disabled style="width:100%;padding:10px;opacity:0.55;cursor:not-allowed;background:var(--text-muted);">
+          <i class="material-icons" style="font-size:16px;vertical-align:-3px;">block</i> Submissions Closed
+        </button>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center;">Late submissions are disabled for this assignment.</div>`;
+      return;
+    }
+    toolsEl.innerHTML = `
+      <div id="detail-add-create" style="border:1.5px dashed var(--border);border-radius:12px;padding:16px;text-align:center;color:var(--text-muted);font-size:13px;cursor:pointer;transition:border-color 0.15s;">
+        <i class="material-icons" style="font-size:22px;vertical-align:-5px;">add</i> Add or Create
+      </div>
+      <input type="file" id="detail-work-file-input" multiple style="display:none;" />
+      <div id="detail-work-pending" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <input type="url" id="detail-work-link-input" class="form-control" placeholder="Paste a link..." />
+        <button type="button" id="detail-work-add-link" class="btn btn-outline" style="white-space:nowrap;padding:6px 12px;">Add</button>
+      </div>
+      <button type="button" id="detail-work-turnin" class="btn btn-primary" style="width:100%;margin-top:14px;padding:10px;"><i class="material-icons" style="font-size:16px;vertical-align:-3px;">upload</i> ${isOverdue ? 'Submit Late' : 'Turn In'}</button>
+    `;
+
+    const renderPending = () => {
+      const pendingEl = el.querySelector('#detail-work-pending');
+      if (!pendingEl) return;
+      const items = [
+        ...pendingDetailFiles.map((f, i) => ({ name: f.name, kind: 'file', i })),
+        ...pendingDetailLinks.map((l, i) => ({ name: l.name, kind: 'link', i })),
+      ];
+      pendingEl.innerHTML = items.map(it =>
+        `<span class="file-chip" style="align-items:center;">${it.kind === 'link' ? '🔗' : '📎'} ${escapeHtml(it.name.slice(0, 22))}
+           <button type="button" class="icon-btn-sm" data-rm-pending="${it.kind}:${it.i}" style="margin-left:6px;color:var(--danger);background:none;border:none;cursor:pointer;font-size:16px;">&times;</button>
+         </span>`
+      ).join('');
+      pendingEl.querySelectorAll('[data-rm-pending]').forEach(b => {
+        b.addEventListener('click', () => {
+          const [kind, idx] = b.dataset.rmPending.split(':');
+          if (kind === 'file') pendingDetailFiles.splice(Number(idx), 1);
+          else pendingDetailLinks.splice(Number(idx), 1);
+          renderPending();
+        });
+      });
+    };
+
+    el.querySelector('#detail-add-create')?.addEventListener('click', () => {
+      el.querySelector('#detail-work-file-input')?.click();
+    });
+    el.querySelector('#detail-work-file-input')?.addEventListener('change', (e) => {
+      Array.from(e.target.files).forEach(f => pendingDetailFiles.push(f));
+      e.target.value = '';
+      renderPending();
+    });
+    el.querySelector('#detail-work-add-link')?.addEventListener('click', () => {
+      const li = el.querySelector('#detail-work-link-input');
+      const url = (li.value || '').trim();
+      if (!url) return;
+      try { new URL(url); } catch (err) { alert('Please enter a valid URL (include https://).'); return; }
+      pendingDetailLinks.push({ name: url.replace(/^https?:\/\//, '').slice(0, 30), url });
+      li.value = '';
+      renderPending();
+    });
+    el.querySelector('#detail-work-turnin')?.addEventListener('click', async () => {
+      if (pendingDetailFiles.length === 0 && pendingDetailLinks.length === 0) {
+        alert('Add at least one file or link before turning in.');
+        return;
+      }
+      const btn = el.querySelector('#detail-work-turnin');
+      btn.disabled = true;
+      btn.textContent = 'Uploading...';
+      try {
+        await submitAssignment(cId, a.id, currentUserProfile, [...pendingDetailFiles, ...pendingDetailLinks]);
+        showAppToast(isOverdue ? 'Submitted late.' : 'Work turned in successfully!', 'success');
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+        btn.innerHTML = `<i class="material-icons" style="font-size:16px;vertical-align:-3px;">upload</i> ${isOverdue ? 'Submit Late' : 'Turn In'}`;
+      }
+    });
+    return;
+  }
+
+  // Submitted (not graded): show files + Unsubmit
+  filesEl.innerHTML = `<div style="font-size:12px;color:var(--text-muted);font-weight:600;margin-bottom:4px;">Submitted ${sub.late ? '<span style="color:var(--warning);">(late)</span>' : ''}:</div><div style="display:flex;flex-wrap:wrap;gap:8px;">${renderFileList(sub.files)}</div>`;
+  toolsEl.innerHTML = `
+    <button type="button" id="detail-work-unsubmit" class="btn btn-outline" style="width:100%;padding:9px;color:var(--danger);border-color:var(--danger);"><i class="material-icons" style="font-size:16px;vertical-align:-3px;">undo</i> Unsubmit Work</button>`;
+  el.querySelector('#detail-work-unsubmit')?.addEventListener('click', async () => {
+    if (!confirm('Unsubmit your work? You will be able to upload updated files.')) return;
+    try {
+      await unsubmitAssignment(cId, a.id, currentUserProfile);
+      showAppToast('Work unsubmitted successfully.', 'info');
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+}
+
 function openViewSubmissions(classroomId, assignment) {
   const title = document.getElementById('view-submissions-title');
   const list = document.getElementById('view-submissions-list');
@@ -4300,34 +4915,67 @@ function openViewSubmissions(classroomId, assignment) {
   list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);">Loading...</div>';
   document.getElementById('modal-view-submissions').style.display = 'flex';
 
-  const unsub = subscribeSubmissions(classroomId, assignment.id, (submissions) => {
-    const allStudents = [];
+  const unsub = subscribeSubmissions(classroomId, assignment.id, async (submissions) => {
     const subMap = {};
-    submissions.forEach(s => {
-      subMap[s.studentId] = s;
-      allStudents.push(s);
-    });
+    submissions.forEach(s => { subMap[s.studentId] = s; });
 
-    document.getElementById('vs-submitted-count').textContent = allStudents.length;
-    document.getElementById('vs-late-count').textContent = allStudents.filter(s => s.late).length;
-    document.getElementById('vs-graded-count').textContent = allStudents.filter(s => s.status === 'graded').length;
-    document.getElementById('vs-pending-count').textContent = allStudents.filter(s => s.status !== 'graded').length;
+    // Build the full class roster so teachers see 'Missing' students too.
+    let roster = [];
+    try {
+      const db = getFirestore();
+      const membersSnap = await getDocs(collection(db, 'classrooms', classroomId, 'members'));
+      roster = membersSnap.docs
+        .map(d => ({ uid: d.data().uid || d.id, displayName: d.data().displayName || 'Student', role: (d.data().role || '').toLowerCase() }))
+        .filter(m => m.role !== 'teacher' && m.role !== 'admin' && m.role !== 'owner');
+    } catch (err) {
+      console.warn('[Assignments] Could not load roster, falling back to submissions only:', err);
+      roster = [];
+    }
+    const rosterUids = new Set(roster.map(r => r.uid));
+
+    const rows = roster.length > 0
+      ? roster.map(r => ({ uid: r.uid, studentName: r.displayName, sub: subMap[r.uid] || null }))
+      : Object.keys(subMap).map(uid => ({ uid, studentName: (subMap[uid].studentName || 'Unknown'), sub: subMap[uid] }));
+
+    const subCount = submissions.length;
+    const gradedCount = submissions.filter(s => s.status === 'graded').length;
+    const missingCount = rosterUids.size > 0 ? rosterUids.size - subCount : 0;
+
+    document.getElementById('vs-submitted-count').textContent = subCount;
+    document.getElementById('vs-late-count').textContent = submissions.filter(s => s.late).length;
+    document.getElementById('vs-graded-count').textContent = gradedCount;
+    document.getElementById('vs-pending-count').textContent = submissions.filter(s => s.status !== 'graded').length;
+    const vsMissing = document.getElementById('vs-missing-count');
+    if (vsMissing) vsMissing.textContent = missingCount;
 
     list.innerHTML = '';
-    if (allStudents.length === 0) {
-      list.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No submissions yet.</div>';
+    if (rows.length === 0) {
+      list.innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No students have submitted yet.</div>';
       return;
     }
-    allStudents.forEach(s => {
+    rows.forEach(r => {
+      const s = r.sub;
       const div = document.createElement('div');
       div.className = 'submission-row';
+      if (!s) {
+        div.innerHTML = `
+          <div style="flex:1;">
+            <div style="font-weight:600;font-size:14px;">${r.studentName}</div>
+            <div style="font-size:12px;color:var(--text-muted);">No submission yet</div>
+          </div>
+          <div style="text-align:right;">
+            <span class="badge-status" style="background:rgba(239,68,68,0.15);color:#ef4444;font-weight:700;">🔴 Missing</span>
+          </div>`;
+        list.appendChild(div);
+        return;
+      }
       const ts = s.submittedAt ? s.submittedAt.toMillis() : Date.now();
       const dateStr = new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const subStatus = s.late ? 'Late' : (s.status === 'graded' ? 'Graded' : 'Submitted');
+      const subStatus = s.late ? 'Turned In Late' : (s.status === 'graded' ? 'Graded' : 'Turned In');
       const statusColor = s.late ? 'var(--warning)' : (s.status === 'graded' ? 'var(--success)' : 'var(--primary)');
       div.innerHTML = `
         <div style="flex:1;">
-          <div style="font-weight:600;font-size:14px;">${s.studentName || 'Unknown'}</div>
+          <div style="font-weight:600;font-size:14px;">${r.studentName}</div>
           <div style="font-size:12px;color:var(--text-muted);">${dateStr} ${s.late ? '⚠ Late' : ''}</div>
           ${(s.files && s.files.length > 0) ? '<div style="margin-top:4px;">' + renderFileList(s.files) + '</div>' : ''}
         </div>
@@ -4522,15 +5170,38 @@ renderClassrooms = function(classrooms, errorMsg) {
     loadGlobalAttendance();
   }
   if (document.getElementById('assignment-list')) {
+    const cb = document.getElementById('btn-create-assignment');
+    if (cb) {
+      const isTeach = currentUserProfile && isTeacher(currentUserProfile);
+      cb.style.display = isTeach ? 'inline-flex' : 'none';
+    }
     buildAssignmentClassroomSelector('assignment-class-selector', (classId) => {
       currentAssignmentClassId = classId;
-      if (assignmentsUnsub) assignmentsUnsub();
-      document.getElementById('assignments-subtitle').textContent = classId ? 'Assignments for selected class.' : 'All classrooms.';
-      const cb = document.getElementById('btn-create-assignment');
-      if (cb) cb.style.display = (classId && currentUserProfile && isTeacher(currentUserProfile)) ? 'inline-flex' : 'none';
-      if (classId) assignmentsUnsub = subscribeAssignments(classId, renderAssignments);
-      else document.getElementById('assignment-list').innerHTML = '<div class="empty-state-sm" style="text-align:center;padding:60px 0;color:var(--text-muted);">Select a classroom.</div>';
+      if (assignmentsUnsub) { assignmentsUnsub(); assignmentsUnsub = null; }
+      const subtitle = document.getElementById('assignments-subtitle');
+      if (subtitle) subtitle.textContent = classId ? 'Assignments for selected class.' : 'All classrooms.';
+      const createBtn = document.getElementById('btn-create-assignment');
+      if (createBtn) {
+        const isTeach = currentUserProfile && isTeacher(currentUserProfile);
+        createBtn.style.display = isTeach ? 'inline-flex' : 'none';
+      }
+      if (classId) {
+        assignmentsUnsub = subscribeAssignments(classId, renderAssignments);
+      } else {
+        const cIds = (userClassrooms || []).map(c => c.classroomId || c.id).filter(Boolean);
+        if (cIds.length > 0) {
+          assignmentsUnsub = subscribeAllClassroomsAssignments(cIds, renderAssignments);
+        } else {
+          renderAssignments([]);
+        }
+      }
     });
+    if (!assignmentsUnsub) {
+      const cIds = (userClassrooms || []).map(c => c.classroomId || c.id).filter(Boolean);
+      if (cIds.length > 0) {
+        assignmentsUnsub = subscribeAllClassroomsAssignments(cIds, renderAssignments);
+      }
+    }
   }
   if (document.getElementById('quiz-list')) buildQuizClassroomSelector();
   if (classrooms.length > 0 && document.getElementById('notes-grid')) {
@@ -6476,16 +7147,46 @@ function renderNotificationFullList(notifications) {
   });
 }
 
+// Real-time alert toasts for assignment workflow notifications (Trigger 1/2/3).
+// Initial snapshot is "seeded" silently; only notifications that arrive after
+// the grace window surface as toasts so users aren't spammed on login.
+const notifiedNotifToastIds = new Set();
+let notifToastGraceTimer = null;
+
+const TOASTABLE_NOTIF_TYPES = new Set([
+  'assignment', 'assignment_created', 'assignment_submitted', 'assignment_graded',
+  'work_graded', 'quiz', 'quiz_submitted', 'meeting', 'announcement', 'classwork_created',
+]);
+
+function maybeToastNewNotification(n) {
+  if (!n || !n.id) return;
+  if (notifToastGraceTimer) { notifiedNotifToastIds.add(n.id); return; }
+  if (notifiedNotifToastIds.has(n.id)) return;
+  notifiedNotifToastIds.add(n.id);
+  if (n.read === true || n.isRead === true) return;
+  if (!TOASTABLE_NOTIF_TYPES.has(n.type)) return;
+  const title = n.title || 'New update';
+  const body = n.message || n.body || '';
+  showAppToast(title + (body ? ' — ' + body : ''), 'info');
+}
+
 function initNotifications(uid) {
   if (notificationsTopUnsub) notificationsTopUnsub();
   if (notificationsSubUnsub) notificationsSubUnsub();
   if (notificationsUnsub) notificationsUnsub();
 
+  // Grace period so the initial snapshot of existing notifications never toasts.
+  clearTimeout(notifToastGraceTimer);
+  notifToastGraceTimer = setTimeout(() => { notifToastGraceTimer = null; }, 2000);
+
   let merged = new Map();
 
   // Primary: each user's own users/{uid}/notifications sub-collection.
   notificationsSubUnsub = subscribeUserNotifications(uid, (subNotifs) => {
-    subNotifs.forEach(n => merged.set(n.id, n));
+    subNotifs.forEach(n => {
+      merged.set(n.id, n);
+      maybeToastNewNotification(n);
+    });
     notificationsCache = [...merged.values()].sort((a, b) => (parseNotifTime(b) || 0) - (parseNotifTime(a) || 0));
     renderNotificationDropdown(notificationsCache);
     if (document.getElementById('tab-notifications')?.classList.contains('active-tab')) {
@@ -6496,7 +7197,10 @@ function initNotifications(uid) {
   // Secondary: legacy top-level notifications collection (older records, join
   // requests). Merged + deduped so both surfaces never double-count.
   notificationsTopUnsub = subscribeNotifications(uid, (topNotifs) => {
-    topNotifs.forEach(n => merged.set(n.id, n));
+    topNotifs.forEach(n => {
+      merged.set(n.id, n);
+      maybeToastNewNotification(n);
+    });
     notificationsCache = [...merged.values()].sort((a, b) => (parseNotifTime(b) || 0) - (parseNotifTime(a) || 0));
     renderNotificationDropdown(notificationsCache);
     if (document.getElementById('tab-notifications')?.classList.contains('active-tab')) {
@@ -7141,6 +7845,26 @@ function refreshClassroomsList() {
 document.querySelectorAll('.nav-menu .nav-item[data-tab]').forEach(item => {
   item.addEventListener('click', function(e) {
     const tab = this.getAttribute('data-tab');
+    if (tab === 'assignments') {
+      if (document.getElementById('assignment-class-selector')) {
+        buildAssignmentClassroomSelector('assignment-class-selector', (classId) => {
+          currentAssignmentClassId = classId;
+          if (assignmentsUnsub) { assignmentsUnsub(); assignmentsUnsub = null; }
+          const subtitle = document.getElementById('assignments-subtitle');
+          if (subtitle) subtitle.textContent = classId ? 'Assignments for selected class.' : 'All classrooms.';
+          if (classId) {
+            assignmentsUnsub = subscribeAssignments(classId, renderAssignments);
+          } else {
+            const cIds = (userClassrooms || []).map(c => c.classroomId || c.id).filter(Boolean);
+            if (cIds.length > 0) {
+              assignmentsUnsub = subscribeAllClassroomsAssignments(cIds, renderAssignments);
+            } else {
+              renderAssignments([]);
+            }
+          }
+        }, userClassrooms);
+      }
+    }
     if (tab === 'chat') {
       const user = currentUserProfile || getAuth().currentUser;
       if (user) {
