@@ -167,17 +167,16 @@ export function attachSignaling(httpServer) {
     });
 
     socket.on('disconnect', () => {
-      const roomId = socket.data.roomId;
-      if (!roomId) return;
-      const room = rooms.get(roomId);
-      if (room?.has(socket.id)) {
-        room.delete(socket.id);
-        socket.to(roomId).emit('user-left', socket.id);
-        socket.to(roomId).emit('user-disconnected', { socketId: socket.id });
-        if (room.size === 0) {
-          rooms.delete(roomId);
-        } else {
-          broadcastRoomState(roomId);
+      for (const [rId, members] of rooms.entries()) {
+        if (members.has(socket.id)) {
+          members.delete(socket.id);
+          socket.to(rId).emit('user-left', socket.id);
+          socket.to(rId).emit('user-disconnected', { socketId: socket.id });
+          if (members.size === 0) {
+            rooms.delete(rId);
+          } else {
+            broadcastRoomState(rId);
+          }
         }
       }
     });

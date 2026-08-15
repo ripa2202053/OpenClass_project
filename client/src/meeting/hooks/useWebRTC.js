@@ -315,8 +315,6 @@ export default function useWebRTC() {
     setIsCameraOff(false);
     setIsScreenSharing(false);
     setRaisedHand(false);
-    setHandRaisedToast(null);
-    speakingIdRef.current = null;
   }, []);
 
   const joinRoom = useCallback(async (roomIdOrOptions = { audio: true, video: true }, maybeOptions = {}) => {
