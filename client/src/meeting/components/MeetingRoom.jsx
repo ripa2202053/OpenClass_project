@@ -30,11 +30,24 @@ export default function MeetingRoom({
   const web = useWebRTC();
   const activeRoomId = roomName || roomId;
 
-  const uniqueRemotePeers = Array.from(
-    new Map((web.remoteStreams || []).map((peer) => [peer.socketId, peer])).values()
-  ).filter((peer) => peer && peer.socketId && peer.socketId !== web.selfSocketId);
+  const trueRemotePeers = Array.from(
+    new Map((web.remoteStreams || []).concat(web.participants || []).map((peer) => [peer.socketId || peer.id, peer])).values()
+  ).filter((peer) => peer && (peer.socketId || peer.id) && (peer.socketId || peer.id) !== web.selfSocketId && (peer.socketId || peer.id) !== 'self');
 
-  const connectedCount = uniqueRemotePeers.length + 1;
+  const localUserEntry = {
+    socketId: web.selfSocketId || 'self',
+    userName: web.selfName || userName || 'You',
+    isHost: web.isHost,
+    muted: web.isMuted,
+    cameraOff: web.isCameraOff,
+    raisedHand: web.raisedHand,
+  };
+
+  const allPeopleList = Array.from(
+    new Map([localUserEntry, ...trueRemotePeers].map((p) => [p.socketId || p.id, p])).values()
+  );
+
+  const totalConnectedCount = allPeopleList.length;
 
   const handleClose = () => {
     try { closeInAppMeeting(); } catch (e) {}
@@ -186,7 +199,7 @@ export default function MeetingRoom({
                 <Clock size={14} color="#818CF8" /> {formatTime(seconds)}
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <Users size={14} color="#34D399" /> {connectedCount} Connected
+                <Users size={14} color="#34D399" /> {totalConnectedCount} Connected
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <Radio size={14} color={web.connected ? '#34D399' : '#FBBF24'} />
@@ -370,7 +383,7 @@ export default function MeetingRoom({
 
           {sidebarOpen && (
             <Sidebar
-              participants={web.participants}
+              participants={allPeopleList}
               messages={web.messages}
               notes={web.notes}
               resources={web.resources}
@@ -398,7 +411,7 @@ export default function MeetingRoom({
           isScreenSharing={web.isScreenSharing}
           micLevel={web.micLevel}
           raisedHand={web.raisedHand}
-          participantsCount={connectedCount}
+          participantsCount={totalConnectedCount}
           sidebarOpen={sidebarOpen}
           isHost={web.isHost}
           onToggleMute={web.toggleMute}

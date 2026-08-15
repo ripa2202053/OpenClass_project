@@ -18,20 +18,32 @@ export default function VideoGrid({
   speakingId = null,
   ...props
 }) {
-  // Consolidate remote source array
-  const rawList = (remoteStreams && remoteStreams.length > 0)
+  // Identify local user identifiers
+  const myUid = currentUser?.uid || currentUser?.id || '';
+  const myName = currentUser?.displayName || currentUser?.name || '';
+  const mySocketId = selfSocketId || socket?.id || '';
+
+  // Consolidate remote source
+  const sourceList = (remoteStreams && remoteStreams.length > 0)
     ? remoteStreams
-    : ((peers && peers.length > 0) ? peers : participants);
+    : (peers && peers.length > 0 ? peers : (participants || []));
 
-  const currentSocketId = selfSocketId || socket?.id || '';
-  const currentUserId = currentUser?.uid || '';
-
-  // Deduplicate by unique socketId and safely exclude local self
-  const remoteParticipants = Array.from(
+  // Filter out local user by UID, socketId, AND isLocal flag
+  const trueRemotePeers = Array.from(
     new Map(
-      (rawList || [])
-        .filter((p) => p && (p.socketId || p.id) && (p.socketId || p.id) !== currentSocketId && (p.socketId || p.id) !== 'self' && (!currentUserId || (p.userId || p.uid) !== currentUserId))
-        .map((p) => [p.socketId || p.id, p])
+      sourceList
+        .filter(peer => {
+          if (!peer) return false;
+          if (peer.isLocal) return false;
+          const sId = peer.socketId || peer.id;
+          if (!sId || sId === 'self') return false;
+          if (mySocketId && sId === mySocketId) return false;
+          if (myUid && (peer.uid === myUid || peer.userId === myUid || peer.id === myUid)) return false;
+          // Fallback: if there is only 1 participant in the room and it matches current user's name, ignore it
+          if (sourceList.length === 1 && myName && (peer.name === myName || peer.userName === myName) && !peer.stream) return false;
+          return true;
+        })
+        .map(peer => [peer.socketId || peer.id || peer.userId || peer.uid, peer])
     ).values()
   );
 
@@ -48,8 +60,8 @@ export default function VideoGrid({
       isHost,
       raisedHand: selfRaisedHand,
     },
-    ...remoteParticipants.map((p, idx) => ({
-      id: p.socketId || p.id || `remote-${idx}`,
+    ...trueRemotePeers.map((p, idx) => ({
+      id: p.socketId || p.id || p.userId || p.uid || `remote-${idx}`,
       name: p.userName || p.name || (p.isHost ? 'Teacher' : 'Participant'),
       stream: p.stream || null,
       isSelf: false,

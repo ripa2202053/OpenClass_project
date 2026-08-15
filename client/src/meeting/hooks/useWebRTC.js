@@ -64,7 +64,10 @@ export default function useWebRTC() {
     const myId = selfSocketIdRef.current || socketRef.current?.id;
 
     peersRef.current.forEach((entry, socketId) => {
-      if (!socketId || socketId === myId) return;
+      if (!socketId || socketId === 'self') return;
+      if (myId && socketId === myId) return;
+      if (socketRef.current?.id && socketId === socketRef.current.id) return;
+      if (entry?.meta?.isLocal) return;
       if (entry && entry.meta) {
         map.set(socketId, {
           socketId,
@@ -164,9 +167,14 @@ export default function useWebRTC() {
 
   const connectToPeer = useCallback(
     async (user, initiate) => {
-      const targetId = user.socketId;
+      const targetId = user?.socketId || user?.id;
       const myId = selfSocketIdRef.current || socketRef.current?.id;
-      if (!targetId || (myId && targetId === myId) || peersRef.current.has(targetId)) return;
+      console.log('[WebRTC] connectToPeer target:', targetId, '| Local:', myId, '| Initiate:', initiate);
+      if (!targetId || targetId === 'self') return;
+      if (myId && targetId === myId) return;
+      if (socketRef.current?.id && targetId === socketRef.current.id) return;
+      if (user.isLocal) return;
+      if (peersRef.current.has(targetId)) return;
 
       const pc = new RTCPeerConnection(RTC_CONFIG);
       localStreamRef.current?.getTracks().forEach((track) => pc.addTrack(track, localStreamRef.current));
@@ -336,11 +344,15 @@ export default function useWebRTC() {
       video = true,
     } = options;
 
+    console.log('[WebRTC] joinRoom() invoked | Room:', rid, '| User:', userName, '| Time:', new Date().toISOString());
     onMeetingEndedRef.current = onMeetingEnded;
     onKickedRef.current = onKicked;
     if (socketRef.current) {
+      console.log('[WebRTC] Existing socket detected in joinRoom, performing clean leaveRoom()');
       leaveRoom();
     }
+    setRemoteStreams([]);
+    setParticipants([]);
     setError(null);
     try {
       await setupLocalStream({ audio, video });
@@ -348,13 +360,21 @@ export default function useWebRTC() {
       setError(err.message || 'Media permission denied');
       return;
     }
-      const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
-      socketRef.current = socket;
+    console.log('[WebRTC] Creating Socket.IO instance to:', SOCKET_URL);
+    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
+    socketRef.current = socket;
+    if (socket.id) {
+      selfSocketIdRef.current = socket.id;
+      setSelfSocketId(socket.id);
+    }
 
-      socket.on('connect', () => {
+    socket.on('connect', () => {
+      console.log('[WebRTC] Socket connect event | Socket ID:', socket.id);
+      if (socket.id) {
         selfSocketIdRef.current = socket.id;
         setSelfSocketId(socket.id);
-      });
+      }
+    });
 
       const handleUserJoined = (user) => {
         const myId = selfSocketIdRef.current || socketRef.current?.id;

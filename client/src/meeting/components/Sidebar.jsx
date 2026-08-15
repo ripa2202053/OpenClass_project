@@ -48,7 +48,11 @@ export default function Sidebar({
   const [resType, setResType] = useState('link');
   const [showResForm, setShowResForm] = useState(false);
 
-  const sorted = [...participants].sort((a, b) => {
+  const uniqueParticipantsList = Array.from(
+    new Map((participants || []).map((p) => [p.socketId || p.id || p.userId || p.uid, p])).values()
+  );
+
+  const sorted = [...uniqueParticipantsList].sort((a, b) => {
     if (a.isHost !== b.isHost) return Number(b.isHost) - Number(a.isHost);
     if (a.raisedHand !== b.raisedHand) return Number(b.raisedHand) - Number(a.raisedHand);
     if (a.raisedHand && b.raisedHand) return (a.raisedAt || 0) - (b.raisedAt || 0);
@@ -160,7 +164,7 @@ export default function Sidebar({
               gap: '4px',
             }}
           >
-            <Users size={14} color="#FFF" /> People ({participants.length})
+            <Users size={14} color="#FFF" /> People ({uniqueParticipantsList.length})
           </button>
 
           <button

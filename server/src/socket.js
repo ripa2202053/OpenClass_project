@@ -63,9 +63,17 @@ export function attachSignaling(httpServer) {
       const userId = decodedUser?.uid || `anon-${socket.id}`;
       const userName = decodedUser?.name || cleanName;
 
-      socket.data.roomId = cleanRoom;
-      socket.data.userId = userId;
-      socket.data.userName = userName;
+      // Leave previous room if socket was in another room
+      if (socket.data.roomId && socket.data.roomId !== cleanRoom) {
+        const oldRoom = rooms.get(socket.data.roomId);
+        if (oldRoom) {
+          oldRoom.delete(socket.id);
+          socket.to(socket.data.roomId).emit('user-left', socket.id);
+          socket.to(socket.data.roomId).emit('user-disconnected', { socketId: socket.id });
+          if (oldRoom.size === 0) rooms.delete(socket.data.roomId);
+          else broadcastRoomState(socket.data.roomId);
+        }
+      }
 
       socket.join(cleanRoom);
 
@@ -73,6 +81,21 @@ export function attachSignaling(httpServer) {
         rooms.set(cleanRoom, new Map());
       }
       const room = rooms.get(cleanRoom);
+
+      // Evict any stale previous entry for the exact same socket.id, userId, or userName in this room
+      for (const [existingSocketId, existingUser] of room.entries()) {
+        if (existingSocketId !== socket.id && (existingUser.userId === userId || existingUser.userName === userName || existingSocketId === socket.id)) {
+          console.log(`[SocketServer] Evicting stale socket ${existingSocketId} (${existingUser.userName}) from room ${cleanRoom}`);
+          room.delete(existingSocketId);
+          socket.to(cleanRoom).emit('user-left', existingSocketId);
+          socket.to(cleanRoom).emit('user-disconnected', { socketId: existingSocketId });
+        }
+      }
+      room.delete(socket.id);
+
+      socket.data.roomId = cleanRoom;
+      socket.data.userId = userId;
+      socket.data.userName = userName;
 
       const isHost = Boolean(data.isHost);
       socket.data.isHost = isHost;
@@ -90,9 +113,11 @@ export function attachSignaling(httpServer) {
 
       room.set(socket.id, participant);
 
+      console.log(`[SocketServer] join-room success | Room: ${cleanRoom} | Socket: ${socket.id} | User: ${userName} | Total Members: ${room.size}`);
+
       socket.to(cleanRoom).emit('user-joined', participant);
 
-      const otherUsers = Array.from(room.values()).filter((u) => u.socketId !== socket.id);
+      const otherUsers = Array.from(room.values()).filter((u) => u && u.socketId && u.socketId !== socket.id);
       socket.emit('all-users', otherUsers);
 
       ack?.({ ok: true, isHost, participants: otherUsers });

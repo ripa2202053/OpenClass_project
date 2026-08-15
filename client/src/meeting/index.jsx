@@ -61,22 +61,20 @@ export function openInAppMeeting(options = {}, userProfile = null) {
 
   meetingRoot = createRoot(container);
   meetingRoot.render(
-    <React.StrictMode>
-      <MeetingRoom
-        roomName={roomName}
-        userName={displayName}
-        token={token}
-        isHost={Boolean(options.isHost)}
-        meetingId={meetingId}
-        classroomId={classroomId}
-        title={title}
-        inviteLink={inviteLink}
-        onLeave={() => {
-          closeInAppMeeting();
-          if (typeof options.onClosed === 'function') options.onClosed();
-        }}
-      />
-    </React.StrictMode>
+    <MeetingRoom
+      roomName={roomName}
+      userName={displayName}
+      token={token}
+      isHost={Boolean(options.isHost)}
+      meetingId={meetingId}
+      classroomId={classroomId}
+      title={title}
+      inviteLink={inviteLink}
+      onLeave={() => {
+        closeInAppMeeting();
+        if (typeof options.onClosed === 'function') options.onClosed();
+      }}
+    />
   );
 }
 
