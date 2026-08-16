@@ -2810,7 +2810,7 @@ function setupAnnounceComposer(classroom, isTeacherParam) {
   if (avatarEl) {
     const u = currentUserProfile || window.currentUserProfile || window.currentUser || getAuth().currentUser || {};
     if (u.photoURL) {
-      avatarEl.innerHTML = `<img src="${u.photoURL}" class="w-full h-full object-cover" alt="" />`;
+      avatarEl.innerHTML = `<img src="${u.photoURL}" style="width:40px; height:40px; object-fit:cover; border-radius:50%; display:block;" alt="" />`;
     } else {
       const name = u.displayName || u.name || 'RK';
       const initials = name.split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase() || 'RK';
@@ -3560,31 +3560,30 @@ function renderAnnouncements(notices, isTeacherParam) {
         const initials = (n.createdByName || 'U').split(' ').map(w => w.charAt(0)).filter(Boolean).slice(0, 2).join('').toUpperCase();
         const currentUser = currentUserProfile || window.currentUserProfile || window.currentUser || {};
         const classroom = window._currentDetailClassroom || {};
-        const authorPhoto = n.authorPhotoURL || n.createdByPhotoURL || n.authorAvatar || n.createdPhotoURL || classroom.teacherPhotoURL || currentUser?.photoURL || '';
+        const authorPhoto = n.authorPhotoURL || n.createdByPhotoURL || n.authorAvatar || n.createdPhotoURL || classroom.teacherPhotoURL || (n.createdBy === currentUser?.uid ? currentUser?.photoURL : '');
 
         const kebab = isTeacherView ? `
-        <div class="relative inline-block text-left">
+        <div style="position:relative; display:inline-block;">
           <!-- 3-Dot Button -->
           <button 
             type="button" 
-            class="w-8 h-8 rounded-xl bg-[#1a233a]/80 hover:bg-[#253252] text-slate-300 hover:text-white flex items-center justify-center transition border border-slate-700/60 shadow-sm focus:outline-none kebab-trigger"
-            style="background:#1a233a; border:1px solid rgba(51,65,85,0.6); color:#cbd5e1;"
+            class="kebab-trigger"
+            style="width:32px; height:32px; border-radius:10px; background:#1a233a; border:1px solid rgba(51,65,85,0.6); color:#cbd5e1; display:flex; align-items:center; justify-content:center; cursor:pointer;"
             onclick="event.stopPropagation(); const m = this.nextElementSibling; document.querySelectorAll('.notice-kebab-menu').forEach(d => d !== m && d.classList.add('hidden')); m.classList.toggle('hidden');"
             data-notice-menu="${esc(n.id)}"
             title="More options"
             aria-label="More options"
           >
-            <svg class="w-4 h-4 pointer-events-none" fill="currentColor" viewBox="0 0 20 20">
+            <svg style="width:16px; height:16px; fill:currentColor;" viewBox="0 0 20 20">
               <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"/>
             </svg>
           </button>
 
-          <!-- Plain-Text Only Dark Navy Popup Dropdown (No Emojis) -->
-          <div class="notice-kebab-menu hidden absolute right-0 top-full mt-1.5 w-32 bg-[#0e1626] border border-slate-700 rounded-xl shadow-2xl p-1.5 z-50 flex flex-col gap-1 backdrop-blur-md" style="background:#0e1626; border:1px solid rgba(51,65,85,0.8); border-radius:12px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);" id="gc-post-menu-${esc(n.id)}">
+          <!-- Dropdown menu -->
+          <div class="notice-kebab-menu hidden" style="position:absolute; right:0; top:100%; margin-top:6px; width:128px; background:#0e1626; border:1px solid rgba(51,65,85,0.8); border-radius:12px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5); padding:6px; z-index:50; display:flex; flex-direction:column; gap:4px;" id="gc-post-menu-${esc(n.id)}">
             <button 
               type="button" 
-              class="w-full px-3 py-2 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-[#1a253c] hover:text-white transition" 
-              style="background:transparent; border:none; color:#e2e8f0;"
+              style="width:100%; padding:8px 12px; text-align:left; font-size:12px; font-weight:500; color:#e2e8f0; background:transparent; border:none; border-radius:6px; cursor:pointer;" 
               data-notice-action="pin" data-id="${esc(n.id)}" data-pinned="${pinned ? '1' : '0'}"
               onclick="window.pinNotice && window.pinNotice('${esc(n.id)}')"
             >
@@ -3593,8 +3592,7 @@ function renderAnnouncements(notices, isTeacherParam) {
             
             <button 
               type="button" 
-              class="w-full px-3 py-2 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-[#1a253c] hover:text-white transition" 
-              style="background:transparent; border:none; color:#e2e8f0;"
+              style="width:100%; padding:8px 12px; text-align:left; font-size:12px; font-weight:500; color:#e2e8f0; background:transparent; border:none; border-radius:6px; cursor:pointer;" 
               data-notice-action="edit" data-id="${esc(n.id)}"
               onclick="window.editNotice && window.editNotice('${esc(n.id)}')"
             >
@@ -3603,8 +3601,7 @@ function renderAnnouncements(notices, isTeacherParam) {
             
             <button 
               type="button" 
-              class="w-full px-3 py-2 rounded-lg text-left text-xs font-medium text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 transition" 
-              style="background:transparent; border:none; color:#fb7185;"
+              style="width:100%; padding:8px 12px; text-align:left; font-size:12px; font-weight:500; color:#fb7185; background:transparent; border:none; border-radius:6px; cursor:pointer;" 
               data-notice-action="delete" data-id="${esc(n.id)}"
               onclick="window.deleteNotice && window.deleteNotice('${esc(n.id)}')"
             >
@@ -3613,22 +3610,22 @@ function renderAnnouncements(notices, isTeacherParam) {
           </div>
         </div>` : '';
         const isGenericTitle = !n.title || n.title === 'Announcement' || n.title === `Announcement by ${n.createdByName}`;
-        const titleHtml = (!isGenericTitle && n.title) ? `<div class="font-semibold text-base text-slate-100 mb-2 mt-2">${renderNoticeText(n.title)}</div>` : '';
-        return `<div class="w-full bg-[#131b2e] border border-slate-800/80 rounded-2xl p-5 mb-4 relative flex flex-col gap-3 shadow-md gc-post-card${pinned ? ' gc-post-card--pinned' : ''}" data-notice-id="${esc(n.id)}" data-raw-title="${esc(n.title || '')}" data-raw-content="${esc(n.content || '')}">
-          ${pinned ? `<div class="gc-post-pinned text-xs text-amber-400 font-semibold flex items-center gap-1">📌 Pinned announcement</div>` : ''}
+        const titleHtml = (!isGenericTitle && n.title) ? `<div style="font-weight:600; font-size:16px; color:#f8fafc; margin:8px 0 4px 0;">${renderNoticeText(n.title)}</div>` : '';
+        return `<div class="gc-post-card${pinned ? ' gc-post-card--pinned' : ''}" style="width:100%; background:#131b2e; border:1px solid rgba(30,41,59,0.8); border-radius:16px; padding:20px; margin-bottom:16px; position:relative; display:flex; flex-direction:column; gap:12px; box-shadow:0 4px 12px rgba(0,0,0,0.2);" data-notice-id="${esc(n.id)}" data-raw-title="${esc(n.title || '')}" data-raw-content="${esc(n.content || '')}">
+          ${pinned ? `<div style="font-size:12px; color:#fbbf24; font-weight:600; display:flex; align-items:center; gap:4px;">📌 Pinned announcement</div>` : ''}
           <!-- Header: Author Info + 3-Dot Menu -->
-          <div class="flex items-center justify-between relative w-full">
+          <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">
             <!-- Left Author Info -->
-            <div class="flex items-center gap-3">
-              <div class="w-10 h-10 rounded-full overflow-hidden border border-slate-700 shrink-0 bg-slate-800">
+            <div style="display:flex; align-items:center; gap:12px;">
+              <div style="width:40px; height:40px; border-radius:50%; overflow:hidden; border:1px solid #334155; flex-shrink:0; background:#1e293b; display:flex; align-items:center; justify-content:center;">
                 ${authorPhoto 
-                  ? `<img src="${authorPhoto}" class="w-full h-full object-cover" alt="Author" onerror="this.style.display='none'; if (this.nextElementSibling) this.nextElementSibling.classList.remove('hidden');" />`
+                  ? `<img src="${authorPhoto}" style="width:40px; height:40px; object-fit:cover; border-radius:50%; display:block;" alt="Author" onerror="this.style.display='none'; if (this.nextElementSibling) this.nextElementSibling.classList.remove('hidden');" />`
                   : ''}
-                <div class="${authorPhoto ? 'hidden' : ''} w-full h-full bg-blue-600 flex items-center justify-center font-bold text-white text-xs">${initials}</div>
+                <div class="${authorPhoto ? 'hidden' : ''}" style="width:100%; height:100%; background:#2563eb; display:flex; align-items:center; justify-content:center; font-weight:bold; color:white; font-size:13px; border-radius:50%;">${initials}</div>
               </div>
               <div>
-                <h4 class="text-sm font-semibold text-white leading-tight">${esc(n.createdByName || n.authorName) || 'Instructor'}</h4>
-                <span class="text-xs text-slate-400">${fmtTs(ts)}</span>
+                <h4 style="font-size:14px; font-weight:600; color:white; margin:0; line-height:1.2;">${esc(n.createdByName || n.authorName) || 'Instructor'}</h4>
+                <span style="font-size:12px; color:#94a3b8;">${fmtTs(ts)}</span>
               </div>
             </div>
             ${kebab}

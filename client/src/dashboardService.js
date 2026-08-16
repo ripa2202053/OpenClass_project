@@ -313,6 +313,7 @@ export async function addNotice(classroomId, title, content, user, opts = {}) {
     content: content || '',
     createdBy: user?.uid || 'teacher',
     createdByName: user?.displayName || user?.name || 'Teacher',
+    authorPhotoURL: user?.photoURL || '',
     createdAt: new Date().toISOString(),
     pinned: !!pinned,
     attachments: Array.isArray(attachments) ? attachments.slice(0, 10) : [],

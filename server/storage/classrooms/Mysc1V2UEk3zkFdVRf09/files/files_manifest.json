@@ -1,5 +1,28 @@
 [
   {
+    "id": "file_1786828389012_qeyw",
+    "fileId": "file_1786828389012_qeyw",
+    "classroomId": "Mysc1V2UEk3zkFdVRf09",
+    "fileName": "Lab 10.pdf",
+    "originalName": "Lab 10.pdf",
+    "originalFileName": "Lab 10.pdf",
+    "lectureTitle": "Lab 10.pdf",
+    "title": "Lab 10.pdf",
+    "description": "",
+    "fileType": "pdf",
+    "mimeType": "application/pdf",
+    "fileSize": 1006766,
+    "storagePath": "classrooms/Mysc1V2UEk3zkFdVRf09/files/file_1786828389012_qeyw/Lab 10.pdf",
+    "downloadURL": "/api/classrooms/Mysc1V2UEk3zkFdVRf09/files/file_1786828389012_qeyw/download",
+    "uploadedBy": "VkgMjjhlyFbdvvkdk4URiLFhf2U2",
+    "uploadedByName": "Ripa",
+    "uploadedByPhotoURL": "",
+    "meetingId": null,
+    "category": "Documents",
+    "createdAt": "2026-08-15T21:13:09.017Z",
+    "updatedAt": "2026-08-15T21:13:09.017Z"
+  },
+  {
     "id": "file_1786826710525_9zv8",
     "fileId": "file_1786826710525_9zv8",
     "classroomId": "Mysc1V2UEk3zkFdVRf09",

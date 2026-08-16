@@ -1842,25 +1842,27 @@
             </div>
 
             <!-- Right Main Stream Column: Announcement Box, Feed & Activity Timeline -->
-            <div class="gc-stream-main col-span-3 space-y-6">
+            <div class="gc-stream-main col-span-3 space-y-6" style="display:flex; flex-direction:column; gap:20px; min-width:0; width:100%;">
               <!-- Announce to Class Composer (teacher-only; hidden for students in JS) -->
-              <div id="gc-announce-box" class="w-full bg-[#131b2e] border border-slate-800 rounded-2xl p-4 mb-6 shadow-md">
-                <div class="flex items-start gap-3">
-                  <div class="w-10 h-10 rounded-full overflow-hidden border border-slate-700 shrink-0" id="announce-user-avatar">
-                    <div class="w-full h-full bg-blue-600 flex items-center justify-center font-bold text-white text-xs">RK</div>
+              <div id="gc-announce-box" style="width:100%; background:#131b2e; border:1px solid #1e293b; border-radius:16px; padding:16px; margin-bottom:16px; box-shadow:0 4px 12px rgba(0,0,0,0.3);">
+                <div style="display:flex; align-items:flex-start; gap:12px;">
+                  <div id="announce-user-avatar" style="width:40px; height:40px; border-radius:50%; overflow:hidden; border:1px solid #334155; flex-shrink:0; background:#2563eb; display:flex; align-items:center; justify-content:center; color:white; font-weight:bold; font-size:13px;">
+                    <div style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:white; font-weight:bold; font-size:13px;">RK</div>
                   </div>
-                  <div class="flex-1 flex flex-col gap-3">
+                  <div style="flex:1; display:flex; flex-direction:column; gap:12px;">
                     <textarea 
                       id="gc-announce-textarea" 
                       rows="2" 
                       placeholder="Announce something to your class..." 
-                      class="w-full bg-[#0b0f19] text-slate-200 placeholder-slate-500 rounded-xl px-4 py-3 border border-slate-800 focus:outline-none focus:border-blue-500 transition text-sm resize-none"
+                      style="width:100%; background:#0b0f19; color:#e2e8f0; border:1px solid #1e293b; border-radius:12px; padding:12px 16px; outline:none; font-size:14px; resize:none; font-family:inherit;"
                     ></textarea>
-                    <div class="flex justify-end">
+                    <div style="display:flex; justify-content:flex-end;">
                       <button 
                         id="gc-post-announce-btn" 
                         type="button" 
-                        class="px-5 py-2 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-medium text-xs rounded-xl shadow transition"
+                        style="padding:8px 20px; background:#2563eb; color:white; font-weight:600; font-size:13px; border-radius:10px; border:none; cursor:pointer; transition:background 0.2s;"
+                        onmouseover="this.style.background='#1d4ed8'"
+                        onmouseout="this.style.background='#2563eb'"
                       >
                         Post
                       </button>
@@ -1869,15 +1871,26 @@
                 </div>
               </div>
 
-              <!-- Announcements Feed -->
-              <div id="gc-announcements-feed" class="space-y-4 w-full">
+              <!-- Announcements Feed (Teacher posts float here first) -->
+              <div id="gc-announcements-feed" style="width:100%;">
                 <div id="detail-posts-list" style="display:flex; flex-direction:column; gap:16px;">
                   <div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);font-size:14px;">No posts yet. Announce something to your class!</div>
                 </div>
               </div>
 
-              <!-- Class Activity Timeline (placed underneath announcements feed, NOT floating on side) -->
-              <div id="gc-activity-feed" class="w-full">
+              <!-- Course Stream Feed -->
+              <div class="w-full" style="width:100%;">
+                <div style="display:flex; align-items:center; gap:8px; margin:16px 0 4px 0;">
+                  <span style="font-weight:700; font-size:14px; color:var(--text-main);">Course Activity</span>
+                  <span style="font-size:12px; color:var(--text-muted);">New materials, assignments, quizzes &amp; live classes</span>
+                </div>
+                <div id="detail-stream-feed" style="display:flex; flex-direction:column; gap:14px; margin-top:12px;">
+                  <div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No course activity yet.</div>
+                </div>
+              </div>
+
+              <!-- Class Activity Timeline (Placed at bottom for teacher join updates & enrollment logs) -->
+              <div id="gc-activity-feed" style="width:100%;">
                 <div id="detail-activity-section" style="display:none;">
                   <div style="display:flex; align-items:center; gap:8px; margin:16px 0 4px 0;">
                     <span style="font-weight:700; font-size:14px; color:var(--text-main);">Class Activity</span>
@@ -1886,17 +1899,6 @@
                   <div id="detail-activity-list" class="timeline" style="margin-top:12px;">
                     <div class="empty-state-sm" style="text-align:center;padding:24px 0;color:var(--text-muted);font-size:14px;">No activity yet.</div>
                   </div>
-                </div>
-              </div>
-
-              <!-- Course Stream Feed -->
-              <div class="w-full">
-                <div style="display:flex; align-items:center; gap:8px; margin:16px 0 4px 0;">
-                  <span style="font-weight:700; font-size:14px; color:var(--text-main);">Course Activity</span>
-                  <span style="font-size:12px; color:var(--text-muted);">New materials, assignments, quizzes &amp; live classes</span>
-                </div>
-                <div id="detail-stream-feed" style="display:flex; flex-direction:column; gap:14px; margin-top:12px;">
-                  <div class="empty-state-sm" style="text-align:center;padding:40px 0;color:var(--text-muted);">No course activity yet.</div>
                 </div>
               </div>
             </div>
